@@ -133,10 +133,9 @@ describe('custom sizes name the limit they broke', () => {
     expect(violation?.nearest.widthMm).toBe(SIZE_LIMITS.minSideMm);
   });
 
-  it('names the roll axis when the width is over it', () => {
-    const check = checkCustomSize(1500, 900);
-    expect(check.violations.some((v) => v.limit === 'limit.rollAxis')).toBe(true);
-    expect(check.size.widthMm).toBeLessThanOrEqual(SIZE_LIMITS.maxRollAxisMm);
+  it('accepts a rotated finished size that the roll optimizer can print', () => {
+    const check = checkCustomSize(2000, 1000);
+    expect(check.ok).toBe(true);
   });
 
   it('names the area cap and keeps the customer’s proportions when shrinking', () => {
@@ -292,8 +291,50 @@ describe('large format', () => {
 
   it('prices by the square metre', () => {
     const quote = priceQuote(BANNER);
-    // 2 m² × $28 = $56.
-    expect(quote.lines.find((l) => l.key === 'print')?.amountCents).toBe(5600);
+    // 2.00 m² printed + 0.74 m² waste × 50% = 2.37 billable m² × $28.
+    expect(quote.lines.find((l) => l.key === 'print')?.amountCents).toBe(6636);
+    expect(quote.rollPlan?.valid).toBe(true);
+    if (!quote.rollPlan?.valid) return;
+    expect(quote.rollPlan.panels[0]?.rollWidthMm).toBe(1370);
+    expect(quote.rollPlan.consumedAreaSqm).toBeCloseTo(2.74);
+    expect(quote.rollPlan.wasteAreaSqm).toBeCloseTo(0.74);
+  });
+
+  it('prices a rotated layout and keeps its roll plan with the quote', () => {
+    const quote = priceQuote({ ...BANNER, customWidthMm: 2000, customHeightMm: 1000 });
+    expect(quote.blocked).toHaveLength(0);
+    expect(quote.rollPlan?.valid).toBe(true);
+    if (!quote.rollPlan?.valid) return;
+    expect(quote.rollPlan.split).toBe(false);
+    expect(quote.rollPlan.panels[0]?.rotated).toBe(true);
+    expect(quote.lines.find((line) => line.key === 'print')?.detail).toMatchObject({
+      rollWidthMm: '1370',
+      consumedAreaSqm: 2.7,
+      wasteAreaSqm: 0.7,
+      wasteFactorPct: 50,
+      rotated: true,
+    });
+  });
+
+  it('quotes a two-piece join only when neither orientation fits', () => {
+    const quote = priceQuote({ ...BANNER, customWidthMm: 2000, customHeightMm: 2000 });
+    expect(quote.blocked).toHaveLength(0);
+    expect(quote.rollPlan?.valid).toBe(true);
+    if (!quote.rollPlan?.valid) return;
+    expect(quote.rollPlan.split).toBe(true);
+    expect(quote.rollPlan.parts).toBe(2);
+    expect(quote.rollPlan.warnings).toContain('roll.twoPieceJoin');
+    expect(quote.lines.find((line) => line.key === 'print')?.detail).toMatchObject({
+      split: true,
+      panelCount: 2,
+      wasteFactorPct: 50,
+    });
+  });
+
+  it('keeps sheet-fed pricing independent of roll optimization', () => {
+    const quote = priceQuote(WORKED);
+    expect(quote.rollPlan).toBeNull();
+    expect(quote.lines.find((line) => line.key === 'material')?.amountCents).toBe(665);
   });
 
   it('charges hemming by the finished perimeter', () => {

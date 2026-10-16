@@ -20,6 +20,7 @@ import {
   type ProductKey,
 } from './catalogue.ts';
 import { imposition } from './jobs.ts';
+import { optimizeRollLayout, type RollLayoutResult, type ValidRollLayoutResult } from './rollOptimizer.ts';
 import {
   BLEED_MM,
   CUTOFF_HOUR,
@@ -34,6 +35,7 @@ import {
   PRINT_PER_SHEET_CENTS,
   PROOF_BY_POST_CENTS,
   PROOF_BY_POST_EXTRA_DAYS,
+  ROLL_WASTE_CHARGE_FACTOR,
   SETUP_CENTS,
   SIZE_LIMITS,
   STANDARD_WORKING_DAYS,
@@ -110,8 +112,8 @@ export function checkCustomSize(
   opts: { stretched?: boolean } = {},
 ): SizeCheck {
   const stretched = opts.stretched ?? false;
-  const maxWidth = stretched ? SIZE_LIMITS.frame.maxWidthMm : SIZE_LIMITS.maxRollAxisMm;
-  const maxHeight = stretched ? SIZE_LIMITS.frame.maxHeightMm : SIZE_LIMITS.maxLengthAxisMm;
+  const maxWidth = stretched ? SIZE_LIMITS.frame.maxWidthMm : SIZE_LIMITS.maxFinishedSideMm;
+  const maxHeight = stretched ? SIZE_LIMITS.frame.maxHeightMm : SIZE_LIMITS.maxFinishedSideMm;
 
   const violations: SizeViolation[] = [];
   // Clamp progressively so the nearest legal size respects every limit at once
@@ -139,7 +141,7 @@ export function checkCustomSize(
   }
   if (w > maxWidth) {
     violations.push({
-      limit: stretched ? 'limit.frameWidth' : 'limit.rollAxis',
+      limit: stretched ? 'limit.frameWidth' : 'limit.lengthAxis',
       actual: w,
       bound: maxWidth,
       nearest: { widthMm: maxWidth, heightMm: h },
@@ -241,7 +243,7 @@ export interface QuoteLine {
   key: QuoteLineKey;
   amountCents: number;
   /** Numbers the mono sub-label renders, e.g. `{ sheets: 24, rate: 120 }`. */
-  detail: Record<string, number | string>;
+  detail: Record<string, number | string | boolean>;
 }
 
 export interface Quote {
@@ -261,6 +263,9 @@ export interface Quote {
   /** The break that applied, so the UI can show what the next one saves. */
   multiplier: number;
   blocked: SizeViolation[];
+  blockedReason: string | null;
+  /** Quote-time physical layout snapshot; null for sheet-fed products. */
+  rollPlan: RollLayoutResult | null;
 }
 
 const cents = (n: number): number => Math.round(n);
@@ -299,15 +304,47 @@ export function priceQuote(config: Configuration): Quote {
         weightKg: 0,
         multiplier: 1,
         blocked: check.violations,
+        blockedReason: null,
+        rollPlan: null,
       };
     }
   }
 
   const size = resolveSize(config);
+  const rollPlan: RollLayoutResult | null =
+    product.press === 'large-format'
+      ? optimizeRollLayout({
+          widthMm: size.widthMm,
+          heightMm: size.heightMm,
+          quantity: config.quantity,
+          rollWidthsMm: material.rollWidthsMm ?? [],
+          wasteFactor: ROLL_WASTE_CHARGE_FACTOR,
+        })
+      : null;
+
+  if (rollPlan !== null && !rollPlan.valid) {
+    return {
+      lines: [],
+      subtotalCents: 0,
+      taxCents: 0,
+      totalCents: 0,
+      unitCents: 0,
+      sheets: 0,
+      up: 0,
+      rotated: false,
+      size,
+      weightKg: 0,
+      multiplier: 1,
+      blocked: [],
+      blockedReason: rollPlan.blocked.reason,
+      rollPlan,
+    };
+  }
+
   const lines: QuoteLine[] =
     product.press === 'sheet'
       ? sheetLines(config, product, size)
-      : largeFormatLines(config, product, size);
+      : largeFormatLines(config, product, size, rollPlan as ValidRollLayoutResult);
 
   const impos =
     product.press === 'sheet'
@@ -361,6 +398,8 @@ export function priceQuote(config: Configuration): Quote {
     weightKg: Math.round(weightKg * 100) / 100,
     multiplier: product.quantityMode === 'breaks' ? breakFor(config.quantity).multiplier : 1,
     blocked: [],
+    blockedReason: null,
+    rollPlan,
   };
 }
 
@@ -409,16 +448,35 @@ function sheetLines(config: Configuration, product: Product, size: ResolvedSize)
   return lines;
 }
 
-function largeFormatLines(config: Configuration, product: Product, size: ResolvedSize): QuoteLine[] {
+function largeFormatLines(
+  config: Configuration,
+  product: Product,
+  size: ResolvedSize,
+  plan: ValidRollLayoutResult,
+): QuoteLine[] {
   const material = MATERIAL_BY_KEY[config.material];
-  const totalAreaSqm = size.areaSqm * config.quantity;
+  const totalAreaSqm = plan.billableAreaSqm;
+  const rollWidthsMm = [...new Set(plan.panels.map((panel) => panel.rollWidthMm))].join(', ');
+  const consumedLengthMm = plan.panels.map((panel) => panel.consumedLengthMm).join(' + ');
 
   const lines: QuoteLine[] = [
     { key: 'setup', amountCents: SETUP_CENTS, detail: {} },
     {
       key: 'print',
       amountCents: cents(totalAreaSqm * material.rateCents),
-      detail: { sqm: Math.round(totalAreaSqm * 100) / 100, rate: material.rateCents },
+      detail: {
+        sqm: Math.round(totalAreaSqm * 100) / 100,
+        rate: material.rateCents,
+        rollWidthMm: rollWidthsMm,
+        consumedAreaSqm: round1(plan.consumedAreaSqm),
+        wasteAreaSqm: round1(plan.wasteAreaSqm),
+        wasteFactorPct: Math.round(plan.wasteFactor * 100),
+        consumedLengthMm,
+        split: plan.split,
+        panelCount: plan.parts,
+        panelDimensions: plan.panels.map((panel) => `${panel.widthMm}×${panel.heightMm}`).join(' + '),
+        rotated: plan.panels.some((panel) => panel.rotated),
+      },
     },
   ];
 

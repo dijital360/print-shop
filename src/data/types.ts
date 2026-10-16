@@ -7,7 +7,7 @@
  */
 
 import type { Job, StockRow } from '../lib/jobs.ts';
-import type { Configuration } from '../lib/quote.ts';
+import type { Configuration, Quote } from '../lib/quote.ts';
 
 export type { Job, StockRow };
 
@@ -54,6 +54,8 @@ export interface Customer {
 export interface SavedQuote {
   ref: string;
   config: Configuration;
+  /** Accepted price and roll plan from the moment the quote was saved. */
+  pricingSnapshot?: Quote;
   savedOn: string;
   customerKey: string;
   /** A name the customer gave it, if any. */

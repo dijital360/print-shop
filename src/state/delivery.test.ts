@@ -41,6 +41,7 @@ function seedBasket(): void {
 beforeEach(() => {
   useStore.setState({
     basket: [],
+    placedLinesSnapshot: [],
     config: null,
     deliveryChoice: null,
     enabled: new Set<string>(),
@@ -128,6 +129,25 @@ describe('switching the add-on off takes its quote with it', () => {
     useStore.getState().disconnectAddOn('design-studio');
 
     expect(useStore.getState().deliveryChoice).toEqual(CHOICE);
+  });
+});
+
+describe('pricing snapshots', () => {
+  it('keeps the accepted roll plan on the basket line and after checkout', () => {
+    useStore.getState().startConfigure('pvc-banners');
+    useStore.getState().patchConfig({ customWidthMm: 2000, customHeightMm: 2000 });
+    useStore.getState().addToBasket();
+
+    const line = useStore.getState().basket[0]!;
+    expect(line.pricingSnapshot?.rollPlan?.valid).toBe(true);
+    if (!line.pricingSnapshot?.rollPlan?.valid) return;
+    expect(line.pricingSnapshot.rollPlan.split).toBe(true);
+
+    useStore.getState().placeOrder();
+    expect(useStore.getState().basket).toHaveLength(0);
+    expect(useStore.getState().placedLinesSnapshot[0]?.pricingSnapshot?.rollPlan).toEqual(
+      line.pricingSnapshot.rollPlan,
+    );
   });
 });
 

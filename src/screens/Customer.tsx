@@ -171,7 +171,7 @@ export function Configurator() {
   if (config === null) return null;
   const product = PRODUCT_BY_KEY[config.product];
   const quote = priceQuote(config);
-  const blocked = quote.blocked.length > 0;
+  const blocked = quote.blocked.length > 0 || quote.blockedReason !== null;
 
   return (
     <section className="mp-screen">
@@ -418,8 +418,7 @@ function SizeStep({
             })
           : t("cust.config.size.limits", {
               min: SIZE_LIMITS.minSideMm,
-              roll: SIZE_LIMITS.maxRollAxisMm,
-              length: SIZE_LIMITS.maxLengthAxisMm,
+              length: SIZE_LIMITS.maxFinishedSideMm,
               area: SIZE_LIMITS.maxAreaSqm,
             })}
       </p>
@@ -705,7 +704,7 @@ export function QuotePanel({ config, quote }: { config: Configuration; quote: Qu
   const toast = useStore((s) => s.toast);
   const [leversOpen, setLeversOpen] = useState(false);
 
-  const blocked = quote.blocked.length > 0;
+  const blocked = quote.blocked.length > 0 || quote.blockedReason !== null;
   const promise = promiseFor(config, { iso: now.iso, hour: now.hour });
 
   return (
@@ -723,6 +722,11 @@ export function QuotePanel({ config, quote }: { config: Configuration; quote: Qu
         </div>
       ) : (
         <>
+          {quote.rollPlan?.valid && quote.rollPlan.split && (
+            <div role="status" className="mp-violation" style={{ margin: "12px 16px 0" }}>
+              {t("roll.twoPieceJoin", { parts: quote.rollPlan.parts })}
+            </div>
+          )}
           <div className="mp-quote-body">
             {quote.lines.map((line) => (
               <div key={line.key} className="mp-qrow">
@@ -830,6 +834,17 @@ function lineDetail(
       );
     }
     if (typeof d.sqm === "number") {
+      if (typeof d.rollWidthMm === "string") {
+        return t("lineDetail.roll", {
+          sqm: d.sqm,
+          rate: cents(Number(d.rate)),
+          roll: d.rollWidthMm,
+          length: Number(d.consumedLengthMm),
+          consumed: Number(d.consumedAreaSqm),
+          waste: Number(d.wasteAreaSqm),
+          wastePct: Number(d.wasteFactorPct),
+        });
+      }
       return t("lineDetail.sqm", { sqm: d.sqm, rate: cents(Number(d.rate)) });
     }
   }

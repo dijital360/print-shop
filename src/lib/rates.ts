@@ -58,17 +58,22 @@ export interface Material {
   gsm: number;
   /** A tint for the gradient tiles — one per material family. */
   tint: string;
+  /** Available original roll widths for this material; absent for sheet stock. */
+  rollWidthsMm?: readonly number[];
 }
+
+/** V1 customer charge for physical unused roll area; kept with rate data. */
+export const ROLL_WASTE_CHARGE_FACTOR = 0.5;
 
 export const MATERIALS: readonly Material[] = [
   { key: 'silk-350', kind: 'sheet', rateCents: 42, gsm: 350, tint: 'silk' },
   { key: 'uncoated-300', kind: 'sheet', rateCents: 38, gsm: 300, tint: 'uncoated' },
   { key: 'silk-170', kind: 'sheet', rateCents: 14, gsm: 170, tint: 'silk' },
   { key: 'silk-130', kind: 'sheet', rateCents: 11, gsm: 130, tint: 'silk' },
-  { key: 'pvc-510', kind: 'roll', rateCents: 2800, gsm: 510, tint: 'pvc' },
-  { key: 'mesh-270', kind: 'roll', rateCents: 3200, gsm: 270, tint: 'mesh' },
-  { key: 'canvas-380', kind: 'roll', rateCents: 4600, gsm: 380, tint: 'canvas' },
-  { key: 'vinyl', kind: 'roll', rateCents: 3400, gsm: 0, tint: 'vinyl' },
+  { key: 'pvc-510', kind: 'roll', rateCents: 2800, gsm: 510, tint: 'pvc', rollWidthsMm: [1370] },
+  { key: 'mesh-270', kind: 'roll', rateCents: 3200, gsm: 270, tint: 'mesh', rollWidthsMm: [1370] },
+  { key: 'canvas-380', kind: 'roll', rateCents: 4600, gsm: 380, tint: 'canvas', rollWidthsMm: [1370] },
+  { key: 'vinyl', kind: 'roll', rateCents: 3400, gsm: 0, tint: 'vinyl', rollWidthsMm: [1370] },
 ];
 
 export const MATERIAL_BY_KEY: Readonly<Record<MaterialKey, Material>> = Object.fromEntries(
@@ -181,9 +186,8 @@ export const LARGE_FORMAT_MAX_QUANTITY = 20;
  */
 export const SIZE_LIMITS = {
   minSideMm: 300,
-  /** The roll is 1370mm wide; this is what it can print across. */
-  maxRollAxisMm: 1350,
-  maxLengthAxisMm: 5000,
+  /** Longest finished side; rotation and two-panel fallback are handled by the optimizer. */
+  maxFinishedSideMm: 5000,
   maxAreaSqm: 6,
   /** Stretched canvas is bounded by the frame, not the roll. */
   frame: { maxWidthMm: 1000, maxHeightMm: 1400 },
