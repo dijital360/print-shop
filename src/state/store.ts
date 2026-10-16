@@ -17,7 +17,7 @@ import { DEFAULT_ADD_ON_SETTINGS } from "../add-ons/registry.ts";
 import { source } from "../data/source.ts";
 import type { ArtworkRecord, Customer, Now, SavedQuote } from "../data/types.ts";
 import { PRODUCT_BY_KEY, type ProductKey } from "../lib/catalogue.ts";
-import type { ArtworkFile } from "../lib/quote.ts";
+import type { ArtworkFile, Quote } from "../lib/quote.ts";
 import {
   columnFor,
   moveJob,
@@ -77,6 +77,8 @@ export const ALL_VIEWS: readonly View[] = [...CUSTOMER_VIEWS, ...SHOP_VIEWS, "40
 export interface BasketLine {
   id: string;
   config: Configuration;
+  /** Quote and roll-production plan captured when the line is priced. */
+  pricingSnapshot?: Quote;
   /**
    * Set once artwork has been supplied for this line.
    *
@@ -180,6 +182,8 @@ interface State {
   lookup: { ref: string; email: string };
   lookupResult: { kind: "job"; ref: string } | { kind: "quote"; ref: string } | { kind: "none" } | null;
   placedRef: string | null;
+  /** Order-line quote snapshots retained when checkout clears the basket. */
+  placedLinesSnapshot: BasketLine[];
   sampleSelection: string[];
 
   // works flow
@@ -331,6 +335,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   lookup: { ref: "", email: "" },
   lookupResult: null,
   placedRef: null,
+  placedLinesSnapshot: [],
   sampleSelection: [],
 
   searchQuery: "",
@@ -430,7 +435,12 @@ export const useStore = create<State & Actions>((set, get) => ({
     const { config, basket } = get();
     if (config === null) return;
     lineSeq += 1;
-    set({ basket: [...basket, { id: `line-${lineSeq}`, config: { ...config } }] });
+    set({
+      basket: [
+        ...basket,
+        { id: `line-${lineSeq}`, config: { ...config }, pricingSnapshot: priceQuote(config) },
+      ],
+    });
     get().go("artwork");
   },
 
@@ -462,6 +472,10 @@ export const useStore = create<State & Actions>((set, get) => ({
       basket: s.basket.map((line) => ({
         ...line,
         config: { ...line.config, delivery: band === "collect" ? "collection" : "band-2kg" },
+        pricingSnapshot: priceQuote({
+          ...line.config,
+          delivery: band === "collect" ? "collection" : "band-2kg",
+        }),
       })),
     })),
 
@@ -471,6 +485,7 @@ export const useStore = create<State & Actions>((set, get) => ({
       basket: s.basket.map((line) => ({
         ...line,
         config: { ...line.config, delivery: "collection" },
+        pricingSnapshot: priceQuote({ ...line.config, delivery: "collection" }),
       })),
     })),
 
@@ -499,8 +514,14 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   placeOrder: () => {
     const ref = source.nextRef();
+    const basket = get().basket;
     set({
       placedRef: ref,
+      placedLinesSnapshot: basket.map((line) => ({
+        ...line,
+        config: { ...line.config },
+        pricingSnapshot: line.pricingSnapshot ?? priceQuote(line.config),
+      })),
       basket: [],
       config: null,
       // The quote belonged to the basket that has just gone.
@@ -516,7 +537,13 @@ export const useStore = create<State & Actions>((set, get) => ({
     set({
       savedQuotes: [
         ...savedQuotes,
-        { ref, config: { ...config }, savedOn: get().todayIso(), customerKey: "harbour" },
+        {
+          ref,
+          config: { ...config },
+          pricingSnapshot: priceQuote(config),
+          savedOn: get().todayIso(),
+          customerKey: "harbour",
+        },
       ],
     });
   },

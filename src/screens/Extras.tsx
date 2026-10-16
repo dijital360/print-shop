@@ -443,7 +443,7 @@ export function SavedQuotes() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 14 }}>
           {saved.map((quote) => {
             const product = PRODUCT_BY_KEY[quote.config.product];
-            const priced = priceQuote(quote.config);
+            const priced = quote.pricingSnapshot ?? priceQuote(quote.config);
             const size = resolveSize(quote.config);
             return (
               <div key={quote.ref} className="mp-panel mp-panel-pad mp-stack" style={{ gap: 12 }}>

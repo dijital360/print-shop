@@ -83,7 +83,7 @@ export function Basket() {
     );
   }
 
-  const quotes = basket.map((line) => priceQuote(line.config));
+  const quotes = basket.map((line) => line.pricingSnapshot ?? priceQuote(line.config));
   /*
    * A carrier's quote is taxed like anything else the customer is charged, and
    * it is zero unless one was chosen — `chooseAddOnDelivery` has already set
