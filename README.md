@@ -10,8 +10,9 @@ do, then sends artwork and gets it checked before anybody prints anything. The
 works imposes that job onto SRA3 sheets, holds it behind an approved proof, runs
 it, and hands it over the counter or to a carrier.
 
-Everything on screen is fiction: the shop, its customers, its jobs and its rate
-card are invented, and no real company appears anywhere.
+Everything in the default demo is fiction: the shop, its customers, its jobs and
+its rate card are invented. The persistent single-shop mode described below
+records real submissions and starts without fictional customers or jobs.
 
 ## The two people it is for
 
@@ -30,12 +31,13 @@ the Price list screen says exactly that.
 
 ## The clock is pinned
 
-Nothing anywhere reads a real clock. Every date derives from **Wednesday
+The demo reads no real clock. Every demo date derives from **Wednesday
 5 August 2026, 10:20** — `NOW` in `src/data/demo.ts` — which is what lets the
 promise dates, the due chips and the overdue count be asserted in tests and
 reproduced in a screenshot a year from now. `src/sources.test.ts` fails the
 build if a `Date.now()`, a `new Date()` or a `Math.random()` appears in a
-shipped module.
+shipped client module. The live server supplies the current date and
+authoritative promise dates.
 
 The dock's **+1 working day** chip advances an OFFSET IN WORKING DAYS, never a
 date, so every view moves together and two screens cannot disagree about what
@@ -136,12 +138,59 @@ with.
 
 ## Running it
 
-Node 20+.
+Node 22.18+; Node 24 is the validated development runtime.
 
 ```sh
 npm ci
 npm run dev            # http://localhost:5173
 ```
+
+The default demo stores submitted orders in memory. Confirmation uses the actual
+submitted lines, totals and promised dates, and each line creates a trackable
+production job. Reloading resets this demo state.
+
+### Persistent single-shop development
+
+The server-backed mode records orders and production changes in PostgreSQL,
+recomputes prices and references on the server, and separates customer and staff
+sessions. It starts with the catalogue and no fictional customers or jobs.
+
+```sh
+npm ci
+npm run shop:staff -- your-email@example.com  # enter your own password privately
+npm run dev:shop                            # API and Vite together
+```
+
+Use the customer application's root and `/staff` for the staff screen. Vite
+proxies `/api/shop` to the API on `127.0.0.1:4100`. `npm run build:shop` builds
+this frontend; `npm run shop:api` runs the API separately. Serve both from the
+same origin. The existing Adminium adapter remains a separate workflow.
+
+By default, embedded PostgreSQL persists in `.print-shop.local/database`, which
+Git ignores. **Stop the API/dev server before using `shop:staff` with this local
+database.** The embedded database permits one process at a time. Alternatively,
+supply `DATABASE_URL` through the process environment for conventional PostgreSQL.
+Both use `db/schema.sql` and additive `db/migrations/001-orders.sql`; existing
+trade data is preserved. Local validation uses PGlite; an external PostgreSQL
+service has not been exercised in this environment.
+
+Customer access is an HttpOnly cookie capability for orders created in that
+browser, valid for 30 days. Clearing cookies, another browser or an expired
+session requires staff help; reference and email alone grant no access. Staff
+sessions last eight hours and logout revokes them on the server. Retrying a
+submission does not duplicate orders, and stale production changes are refused.
+Replacement proofs require a fresh approval. Asking for a change extends the
+current job's promise by one working day while preserving the original receipt.
+
+This milestone records unpaid orders. Original artwork uploads, email access
+recovery, payment/carrier integrations and an editable rate card remain pending.
+Review the example prices before operational use. Live checkout omits simulated
+uploads, card details, add-ons and the fictional shop address.
+
+For deployment, provide an exact HTTPS `PRINT_SHOP_PUBLIC_ORIGIN`, persistent
+database storage/backups and a reverse proxy for `/api/shop`. Create the owner's
+staff account before exposing the site. These code changes do not deploy or
+publish the application.
 
 ```sh
 npm run build          # tsc -b && vite build

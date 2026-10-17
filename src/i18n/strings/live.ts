@@ -113,7 +113,7 @@ export const live = {
     "live.emptyOrders": "Zatím jste zde nic neobjednali.",
     "live.ordersScope": "Zde se zobrazují objednávky vytvořené v tomto prohlížeči.",
     "live.paymentPending": "Čeká se na platbu. Z žádné karty nebyla stržena částka.",
-    "live.confirmLede": "Objednávka byla uložena. Uschovejte si její číslo pro sledování průběhu.",
+    "live.confirmLede": "Objednávka byla uložena. Uschovejte si její číslo, abyste mohli sledovat průběh.",
     "live.products": "Produkty",
     "live.staff": "Zaměstnanci",
     "live.serviceUnavailable": "Tiskárna je dočasně nedostupná. Zkuste to znovu.",
