@@ -217,6 +217,8 @@ For a VPS deployment with automatic HTTPS, PostgreSQL and the live order API,
 follow the [production deployment guide](deploy/README.md).
 If you do not have a server, follow the [Railway deployment guide](deploy/RAILWAY.md)
 to host the application with a persistent PostgreSQL service.
+Reusable Codex development setup is documented in the
+[cloud environment notes](docs/CLOUD_ENVIRONMENT.md).
 
 ```sh
 npm run build          # tsc -b && vite build
