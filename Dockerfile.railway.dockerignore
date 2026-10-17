@@ -1,0 +1,17 @@
+# This Dockerfile needs db/schema.sql and db/migrations; do not exclude db/.
+.git
+**/.git
+.github
+node_modules
+**/node_modules
+dist
+.provenance
+**/.provenance
+.vercel
+.DS_Store
+*.tsbuildinfo
+npm-debug.log*
+.env*
+**/.env*
+*.local
+**/*.local

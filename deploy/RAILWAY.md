@@ -1,8 +1,7 @@
 # Sunucu olmadan Railway üzerinde yayımlama
 
 Bu yol için ayrı VPS veya alan adı gerekmez; Railway bir HTTPS adresi sağlar.
-Aşağıdaki adımlar yayın hazırlığıdır; Railway hesabında henüz uygulama
-yayımlanmadı. Güncel ücret ve deneme koşullarını Railway üzerinde kontrol edin.
+Güncel ücret ve deneme koşullarını Railway üzerinde kontrol edin.
 
 ## 1. Railway hesabınızı açın
 
@@ -25,11 +24,13 @@ bu yayın akışı henüz `main` dalında değildir.
 Uygulamanın Variables alanına şu değeri ekleyin:
 
 ```text
-RAILWAY_DOCKERFILE_PATH=Dockerfile.shop
+RAILWAY_DOCKERFILE_PATH=Dockerfile.railway
 ```
 
 Özel başlangıç komutu gerekmez; imaj hem siteyi hem sipariş servisini
 çalıştırır. Uygulamayı tek kopya/replica olarak tutun.
+Railway dosyası, platformun desteklemediği Docker secret mount seçeneğini
+kullanmaz. Yerel ve VPS kurulumu için `Dockerfile.shop` kullanılmaya devam eder.
 
 ## 4. Veritabanını bağlayıp ilk personel hesabını tanımlayın
 
@@ -66,6 +67,8 @@ ayarlayabilirsiniz; örneğin `https://baski.example.com`.
 Ayarları kaydedip deploy işlemini başlatın veya ilk otomatik deneme ayarlar
 tamamlanmadan başladıysa yeniden deploy edin. Uygulamanın hazır olduğunu
 Railway üzerinden doğrulayın.
+Healthcheck Path alanını `/api/shop/health`, zaman aşımını 120 saniye olarak
+ayarlayın.
 
 ## 6. Siteyi ve personel girişini kontrol edin
 
