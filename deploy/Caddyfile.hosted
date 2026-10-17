@@ -1,0 +1,23 @@
+{
+	# Railway and other managed providers supply the public HTTPS endpoint.
+	auto_https off
+	admin off
+}
+
+:{$PORT:8080} {
+	encode zstd gzip
+	request_body {
+		max_size 10485760
+	}
+
+	@api path /api /api/*
+	handle @api {
+		reverse_proxy 127.0.0.1:4100
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

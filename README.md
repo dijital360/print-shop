@@ -171,8 +171,10 @@ Git ignores. **Stop the API/dev server before using `shop:staff` with this local
 database.** The embedded database permits one process at a time. Alternatively,
 supply `DATABASE_URL` through the process environment for conventional PostgreSQL.
 Both use `db/schema.sql` and the additive migrations in `db/migrations/`;
-existing trade data is preserved. Local validation uses PGlite; an external
-PostgreSQL service has not been exercised in this environment.
+existing trade data is preserved. Validation covers PGlite and PostgreSQL 16
+containers, including HTTPS order/file/proof checks, restart persistence and a
+backup restored to a separate database. A hosted provider still needs to be
+configured and checked at its public address.
 
 Customer access is an HttpOnly cookie capability for orders created in that
 browser, valid for 30 days. Clearing cookies, another browser or an expired
@@ -210,6 +212,11 @@ database storage/backups and a reverse proxy for `/api/shop`. Create the owner's
 staff account before exposing the site and allow 10 MiB upload bodies at the
 proxy. These code changes do not deploy or
 publish the application.
+
+For a VPS deployment with automatic HTTPS, PostgreSQL and the live order API,
+follow the [production deployment guide](deploy/README.md).
+If you do not have a server, follow the [Railway deployment guide](deploy/RAILWAY.md)
+to host the application with a persistent PostgreSQL service.
 
 ```sh
 npm run build          # tsc -b && vite build

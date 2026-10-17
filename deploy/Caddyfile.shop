@@ -1,0 +1,19 @@
+{$PRINT_SHOP_DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size 10485760
+	}
+
+	# Preserve the complete API path, including unknown routes, so API errors
+	# stay JSON responses instead of falling through to the SPA document.
+	@api path /api /api/*
+	handle @api {
+		reverse_proxy api:4100
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -1,0 +1,71 @@
+# syntax=docker/dockerfile:1
+
+# Install from the lockfile. The optional CA mount is needed only by hosts whose
+# HTTPS proxy supplies its own CA; it never becomes part of an image layer.
+FROM node:24-bookworm-slim AS production-dependencies
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --omit=dev --strict-ssl=true --no-audit --no-fund
+
+# Node runs TypeScript directly. Only server code, the pure calculation modules,
+# shared data contracts and schema migrations are needed at runtime.
+FROM node:24-bookworm-slim AS api
+WORKDIR /app
+ENV NODE_ENV=production \
+    PRINT_SHOP_API_HOST=0.0.0.0 \
+    PRINT_SHOP_API_PORT=4100
+COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node package.json package-lock.json ./
+COPY --chown=node:node server/main.ts server/http.ts server/database.ts server/repository.ts server/fileValidation.ts server/cli.ts ./server/
+COPY --chown=node:node src/lib/catalogue.ts src/lib/jobs.ts src/lib/quote.ts src/lib/rates.ts ./src/lib/
+COPY --chown=node:node src/data/shopContract.ts src/data/types.ts ./src/data/
+COPY --chown=node:node db/schema.sql ./db/schema.sql
+COPY --chown=node:node db/migrations ./db/migrations
+USER node
+EXPOSE 4100
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["node", "-e", "fetch('http://127.0.0.1:' + (process.env.PRINT_SHOP_API_PORT || '4100') + '/api/shop/health', { signal: AbortSignal.timeout(4000) }).then(response => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"]
+CMD ["node", "server/main.ts"]
+
+# The browser bundle is explicitly the live shop. No runtime credential is
+# passed through Vite build arguments or copied from a host environment file.
+FROM node:24-bookworm-slim AS web-build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --strict-ssl=true --no-audit --no-fund
+COPY . .
+RUN npm run build:shop
+
+FROM caddy:2-alpine AS web
+COPY --from=web-build /app/dist /srv
+COPY deploy/Caddyfile.shop /etc/caddy/Caddyfile
+EXPOSE 80 443
+
+# Managed hosting terminates HTTPS before this container. One non-root
+# supervisor starts the API and the static/API proxy on the provider's PORT.
+# The VPS compose file continues to select its explicit api and web targets.
+FROM api AS hosted
+COPY --from=web --chown=node:node /usr/bin/caddy /usr/bin/caddy
+COPY --from=web --chown=node:node /srv /srv
+COPY --chown=node:node server/hosted.ts ./server/hosted.ts
+COPY --chown=node:node deploy/Caddyfile.hosted ./deploy/Caddyfile.hosted
+# The upstream binary carries CAP_NET_BIND_SERVICE. Hosted ports are
+# unprivileged; recreate the inode without file capabilities so restricted
+# container runtimes can execute it with no-new-privileges and cap_drop=ALL.
+USER root
+RUN cp /usr/bin/caddy /tmp/caddy-unprivileged \
+    && rm /usr/bin/caddy \
+    && mv /tmp/caddy-unprivileged /usr/bin/caddy \
+    && chown node:node /usr/bin/caddy
+USER node
+ENV PORT=8080 \
+    XDG_CONFIG_HOME=/tmp/print-shop-caddy-config \
+    XDG_DATA_HOME=/tmp/print-shop-caddy-data
+EXPOSE 8080
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["node", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || '8080') + '/api/shop/health', { signal: AbortSignal.timeout(4000) }).then(response => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"]
+CMD ["node", "server/hosted.ts"]

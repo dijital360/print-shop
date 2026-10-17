@@ -1,0 +1,60 @@
+# Use: docker compose --env-file .env.production -f compose.shop.yml up -d --build
+# Runtime secrets belong in that external file, never in Docker build arguments.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: print_shop
+      POSTGRES_DB: print_shop
+      POSTGRES_PASSWORD: ${PRINT_SHOP_DB_PASSWORD:?Set PRINT_SHOP_DB_PASSWORD in the production environment file}
+    volumes:
+      - shop-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    stop_grace_period: 15s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.shop
+      target: api
+    environment:
+      NODE_ENV: production
+      PRINT_SHOP_API_HOST: 0.0.0.0
+      PRINT_SHOP_API_PORT: "4100"
+      PRINT_SHOP_PUBLIC_ORIGIN: https://${PRINT_SHOP_DOMAIN:?Set PRINT_SHOP_DOMAIN in the production environment file}
+      DATABASE_URL: postgres://print_shop:${PRINT_SHOP_DB_PASSWORD:?Set PRINT_SHOP_DB_PASSWORD in the production environment file}@db:5432/print_shop
+    depends_on:
+      db:
+        condition: service_healthy
+    stop_grace_period: 15s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.shop
+      target: web
+    environment:
+      PRINT_SHOP_DOMAIN: ${PRINT_SHOP_DOMAIN:?Set PRINT_SHOP_DOMAIN in the production environment file}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - shop-caddy-data:/data
+      - shop-caddy-config:/config
+    stop_grace_period: 15s
+    restart: unless-stopped
+
+volumes:
+  shop-db-data:
+  shop-caddy-data:
+  shop-caddy-config:
