@@ -69,6 +69,7 @@ import {
   TAX_RATE,
 } from "../lib/rates.ts";
 import { useStore } from "../state/store.ts";
+import { LIVE } from "../surface.ts";
 
 /* ── 1 · PRODUCTS ────────────────────────────────────────────────────────── */
 
@@ -798,7 +799,7 @@ export function QuotePanel({ config, quote }: { config: Configuration; quote: Qu
               {t("cust.quote.cta")}
               <ArrowRight size={16} aria-hidden="true" />
             </button>
-            <button
+            {!LIVE && <button
               type="button"
               className="mp-button mp-button--ghost mp-btn mp-button--block"
               onClick={() => {
@@ -807,7 +808,7 @@ export function QuotePanel({ config, quote }: { config: Configuration; quote: Qu
               }}
             >
               {t("cust.quote.save")}
-            </button>
+            </button>}
           </div>
         </>
       )}

@@ -23,9 +23,11 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { source } from "../data/source.ts";
 import { useI18n, useT } from "../i18n/index.tsx";
 import { PRODUCTS, PRODUCT_BY_KEY } from "../lib/catalogue.ts";
 import { useStore, type CustomerView, type ShopView } from "../state/store.ts";
+import { LIVE } from "../surface.ts";
 import { ThemeToggle, LocalePicker } from "./DemoDock.tsx";
 
 const CUST_NAV: { view: CustomerView; key: string }[] = [
@@ -51,9 +53,9 @@ function Brand({ onClick, small = false }: { onClick: () => void; small?: boolea
       </span>
       <span style={{ display: "flex", flexDirection: "column" }}>
         <span className="mp-brand-name" style={small ? { fontSize: 14.5 } : undefined}>
-          {t("chrome.brand")}
+          {LIVE ? source.works().name : t("chrome.brand")}
         </span>
-        {!small && <span className="mp-brand-tag">{t("chrome.brandTag")}</span>}
+        {!small && !LIVE && <span className="mp-brand-tag">{t("chrome.brandTag")}</span>}
       </span>
     </button>
   );
@@ -69,8 +71,8 @@ export function CustomerShell({ children }: { children: ReactNode }) {
       <header className="mp-cust-header">
         <div className="mp-wrap">
           <Brand onClick={() => go("products")} />
-          <nav className="mp-cust-nav" aria-label={t("chrome.brand")}>
-            {CUST_NAV.map((item) => (
+          <nav className="mp-cust-nav" aria-label={LIVE ? source.works().name : t("chrome.brand")}>
+            {CUST_NAV.filter((item) => !LIVE || item.view !== "findus").map((item) => (
               <button
                 key={item.view}
                 type="button"
@@ -97,6 +99,7 @@ export function CustomerShell({ children }: { children: ReactNode }) {
 function CustomerFooter() {
   const t = useT();
   const go = useStore((s) => s.go);
+  if (LIVE) return null;
   return (
     <footer className="mp-footer">
       <div className="mp-wrap mp-footer-cols">
@@ -173,7 +176,7 @@ export function ShopShell({ children }: { children: ReactNode }) {
           <Brand onClick={() => go("today")} small />
         </div>
         <ShopNav />
-        <div className="mp-sidebar-note">{t("chrome.sidebarNote")}</div>
+        {!LIVE && <div className="mp-sidebar-note">{t("chrome.sidebarNote")}</div>}
       </aside>
 
       <div className="mp-shop-body">
@@ -202,7 +205,7 @@ export function ShopShell({ children }: { children: ReactNode }) {
                 whiteSpace: "nowrap",
               }}
             >
-              <span
+              {!LIVE && <span
                 className="mp-mono"
                 style={{
                   inlineSize: 26,
@@ -217,21 +220,21 @@ export function ShopShell({ children }: { children: ReactNode }) {
                 }}
               >
                 RM
-              </span>
-              <span style={{ fontSize: 12.5, fontWeight: 600 }}>{t("chrome.staff")}</span>
+              </span>}
+              <span style={{ fontSize: 12.5, fontWeight: 600 }}>{t(LIVE ? "live.staff" : "chrome.staff")}</span>
             </span>
           </div>
         </header>
 
         <main className="mp-shop-main">{children}</main>
 
-        <footer className="mp-footer">
+        {!LIVE && <footer className="mp-footer">
           <div className="mp-wrap mp-footer-bar" style={{ borderBlockStart: 0 }}>
             <div className="mp-wrap" style={{ paddingInline: 0 }}>
               <span className="mp-footer-note">{t("chrome.footer.copyright")}</span>
             </div>
           </div>
-        </footer>
+        </footer>}
       </div>
     </div>
   );
@@ -243,7 +246,7 @@ export function ShopNav({ onNavigate }: { onNavigate?: () => void } = {}) {
   const go = useStore((s) => s.go);
   return (
     <nav className="mp-sidebar-nav" aria-label={t("chrome.nav.today")}>
-      {SHOP_NAV.map((item) => (
+      {SHOP_NAV.filter((item) => !LIVE || item.view !== "addons").map((item) => (
         <button
           key={item.view}
           type="button"
@@ -396,7 +399,7 @@ export function NavSheet() {
         aria-label={t("chrome.menu")}
       >
         <div className="mp-sidebar-head" style={{ justifyContent: "space-between" }}>
-          <span style={{ fontSize: 14.5, fontWeight: 800 }}>{t("chrome.brand")}</span>
+          <span style={{ fontSize: 14.5, fontWeight: 800 }}>{LIVE ? source.works().name : t("chrome.brand")}</span>
           <button type="button" className="mp-iconbtn" aria-label={t("common.close")} onClick={closeOverlay}>
             <X size={16} aria-hidden="true" />
           </button>

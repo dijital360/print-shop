@@ -102,6 +102,8 @@ export interface ProofEvent {
 }
 
 export interface Job {
+  /** Server revision for optimistic writes; demo records omit it. */
+  revision?: number;
   ref: string;
   productKey: string;
   materialKey: string;
@@ -125,7 +127,7 @@ export interface Job {
 
 /** A job cannot leave prepress until its proof is approved. */
 export function proofApproved(job: Job): boolean {
-  return job.proofs.some((p) => p.kind === 'approved');
+  return job.proofs.at(-1)?.kind === 'approved';
 }
 
 /** True when the board should draw the padlock. */

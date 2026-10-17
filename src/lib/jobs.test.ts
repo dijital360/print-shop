@@ -114,6 +114,15 @@ describe('the proof gate', () => {
     if (result.ok) expect(result.stage).toBe('printing');
   });
 
+  it('requires a fresh approval after a change request or a replacement proof', () => {
+    for (const kind of ['change-asked', 'sent'] as const) {
+      const revised = job({ proofs: [{ kind: 'approved', at: TODAY }, { kind, at: TODAY }] });
+      expect(proofApproved(revised)).toBe(false);
+      expect(isLocked(revised)).toBe(true);
+      expect(moveJob(revised, 'printing').ok).toBe(false);
+    }
+  });
+
   it('never gates a move that does not leave prepress', () => {
     expect(moveJob(job({ stage: 'printing' }), 'finishing').ok).toBe(true);
     expect(moveJob(job({ stage: 'finishing' }), 'ready').ok).toBe(true);

@@ -13,7 +13,7 @@ import { useState } from "react";
 
 import { AddOnSlot } from "../components/AddOnSlot.tsx";
 import { checkoutItems, outboundOrderFor, shopClock, SHOP_ORIGIN } from "../add-ons/records.ts";
-import { EmptyState, Field, Mono, Tag, Tile } from "../components/Primitives.tsx";
+import { EmptyState, Field, Mono, Tag, Tile, Typed } from "../components/Primitives.tsx";
 import { useI18n, useT } from "../i18n/index.tsx";
 import { PRODUCT_BY_KEY } from "../lib/catalogue.ts";
 import { cents, day, mm, num, shortDay } from "../lib/format.ts";
@@ -21,6 +21,8 @@ import { CUSTOMER_STAGES, customerStageIndex, proofApproved } from "../lib/jobs.
 import { checkArtwork, priceQuote, promiseFor, resolveSize } from "../lib/quote.ts";
 import { TAX_RATE } from "../lib/rates.ts";
 import { useStore, worksBandFor } from "../state/store.ts";
+import { afterAction } from "../state/actionResult.ts";
+import { LIVE } from "../surface.ts";
 
 export function Basket() {
   const t = useT();
@@ -33,6 +35,8 @@ export function Basket() {
   const removeLine = useStore((s) => s.removeLine);
   const editLine = useStore((s) => s.editLine);
   const placeOrder = useStore((s) => s.placeOrder);
+  const submitOrder = useStore((s) => s.submitOrder);
+  const submittingOrder = useStore((s) => s.submittingOrder);
   const go = useStore((s) => s.go);
   const now = useStore((s) => s.now);
   const todayIso = useStore((s) => s.todayIso);
@@ -95,7 +99,7 @@ export function Basket() {
   const tax = Math.round(goods * TAX_RATE);
   const total = goods + tax;
   const readyBy = basket
-    .map((line) => promiseFor(line.config, { iso: now.iso, hour: now.hour }).readyBy)
+    .map((line) => promiseFor(line.config, { iso: todayIso(), hour: now.hour }).readyBy)
     .sort()
     .at(-1)!;
 
@@ -105,7 +109,15 @@ export function Basket() {
         {t("cust.basket.title")}
       </h1>
 
-      <div className="mp-config">
+      <form className="mp-config" onSubmit={(event) => {
+        event.preventDefault();
+        const announce = (ref: string | null) => {
+          if (ref !== null) toast(t("toast.orderPlaced", { ref }), "pos");
+          else toast(t("cust.basket.orderFailed"), "warn");
+        };
+        if (LIVE) void submitOrder().then(announce);
+        else announce(placeOrder());
+      }}>
         <div className="mp-stack">
           {basket.map((line, i) => {
             const product = PRODUCT_BY_KEY[line.config.product];
@@ -221,7 +233,7 @@ export function Basket() {
                       {t(key === "standard" ? "cust.basket.standard" : "cust.basket.collect")}
                     </span>
                     <span style={{ fontSize: 12, color: "var(--fg-subtle)" }}>
-                      {t(key === "standard" ? "cust.basket.standardSub" : "cust.basket.collectSub")}
+                      {t(key === "standard" ? "cust.basket.standardSub" : LIVE ? "cust.basket.collect" : "cust.basket.collectSub")}
                     </span>
                   </span>
                 </button>
@@ -291,7 +303,8 @@ export function Basket() {
                   className="mp-input mp-fld"
                   value={details.name}
                   onChange={(e) => setDetails({ name: e.target.value })}
-                  placeholder="Harbour Bakery"
+                  required autoComplete="name"
+                  placeholder={LIVE ? t("cust.basket.name") : "Harbour Bakery"}
                 />
               </Field>
               <Field label={t("cust.basket.email")}>
@@ -299,13 +312,14 @@ export function Basket() {
                   className="mp-input mp-fld"
                   value={details.email}
                   onChange={(e) => setDetails({ email: e.target.value })}
+                  type="email" required autoComplete="email"
                   placeholder="you@example.com"
                 />
               </Field>
             </div>
           </div>
 
-          <div className="mp-panel mp-panel-pad">
+          {LIVE ? <div className="mp-panel mp-panel-pad" role="note">{t("live.paymentPending")}</div> : <div className="mp-panel mp-panel-pad">
             <h2 className="mp-h2" style={{ marginBlockEnd: 12 }}>
               {t("cust.basket.payment")}
             </h2>
@@ -341,7 +355,7 @@ export function Basket() {
                 <span style={{ fontSize: 13, fontWeight: 600 }}>{t("cust.basket.demoCallout")}</span>
               </div>
             </div>
-          </div>
+          </div>}
         </div>
 
         <aside className="mp-quote" style={{ padding: "17px 18px" }}>
@@ -414,42 +428,26 @@ export function Basket() {
             <strong>{t("cust.quote.ready", { day: day(readyBy) })}</strong>
           </div>
           <button
-            type="button"
+            type="submit"
             className="mp-button mp-btn mp-button--block"
-            onClick={() => {
-              const ref = useStore.getState().jobs.length >= 0 ? "MP-4127" : "MP-4127";
-              placeOrder();
-              toast(t("toast.orderPlaced", { ref }), "pos");
-            }}
+            disabled={submittingOrder} aria-busy={submittingOrder}
           >
             {t("cust.basket.place")}
           </button>
         </aside>
-      </div>
+      </form>
     </section>
   );
 }
 
 export function Confirmation() {
   const t = useT();
-  const placedRef = useStore((s) => s.placedRef);
+  const order = useStore((s) => s.orders.find((entry) => entry.ref === s.placedRef));
   const go = useStore((s) => s.go);
-  const now = useStore((s) => s.now);
-  const readyBy = promiseFor(
-    {
-      product: "business-cards",
-      material: "silk-350",
-      size: "business-card",
-      sides: 2,
-      finish: "none",
-      quantity: 500,
-      packaging: "bundled",
-      printedProof: false,
-      express: false,
-      delivery: "collection",
-    },
-    { iso: now.iso, hour: now.hour },
-  ).readyBy;
+  const setLookup = useStore((s) => s.setLookup);
+  const doLookup = useStore((s) => s.doLookup);
+  if (order === undefined) return <Basket />;
+  const follow = (ref: string) => { setLookup({ ref, email: order.customer.email }); doLookup(); go("order"); };
 
   return (
     <section className="mp-screen mp-narrower mp-centre">
@@ -471,7 +469,7 @@ export function Confirmation() {
         {t("cust.confirm.title")}
       </h1>
       <p className="mp-lede" style={{ marginInline: "auto" }}>
-        {t("cust.confirm.lede")}
+        {t(LIVE ? "live.confirmLede" : "cust.confirm.lede")}
       </p>
 
       <div
@@ -486,14 +484,29 @@ export function Confirmation() {
           marginBlockEnd: 22,
         }}
       >
-        <Mono style={{ fontSize: 24, fontWeight: 700 }}>{placedRef ?? "MP-4127"}</Mono>
+        <Mono style={{ fontSize: 24, fontWeight: 700 }}>{order.ref}</Mono>
         <span style={{ inlineSize: 1, blockSize: 26, background: "var(--border)" }} />
         <span style={{ textAlign: "start" }}>
           <span style={{ display: "block", fontSize: 11, color: "var(--fg-subtle)" }}>
             {t("cust.confirm.readyBy")}
           </span>
-          <span style={{ fontSize: 13.5, fontWeight: 700 }}>{day(readyBy)}</span>
+          <span style={{ fontSize: 13.5, fontWeight: 700 }}>{day(order.readyBy)}</span>
         </span>
+      </div>
+
+      <div className="mp-panel" style={{ textAlign: "start", padding: 18, marginBlockEnd: 16 }}>
+        <h2 className="mp-h2">{t("cust.basket.summary")}</h2>
+        <p><Typed>{order.customer.name}</Typed></p>
+        {order.lines.map((line) => <div key={line.id} style={{ paddingBlock: 12, borderBlockEnd: "1px solid var(--border)" }}>
+          <div className="mp-row"><strong>{num(line.config.quantity)} × {t(`data.product.${line.config.product}` as never)}</strong><Mono>{cents(line.subtotalCents)}</Mono></div>
+          <div className="mp-row"><Mono>{line.jobRef}</Mono><span>{t("cust.quote.ready", { day: day(line.readyBy) })}</span>
+            <button type="button" className="mp-button mp-button--ghost mp-btn" onClick={() => follow(line.jobRef)}>{t("cust.confirm.follow")}<span className="mp-sr-only"> {line.jobRef}</span></button>
+          </div>
+          {line.artwork !== undefined && <p><Typed>{line.artwork.filename}</Typed></p>}
+        </div>)}
+        <div className="mp-qrow"><span>{t("cust.basket.goods")}</span><Mono>{cents(order.subtotalCents)}</Mono></div>
+        <div className="mp-qrow"><span>{t("line.tax", { pct: Math.round(TAX_RATE * 100) })}</span><Mono>{cents(order.taxCents)}</Mono></div>
+        <div className="mp-qrow mp-qrow--total"><span>{t("line.total")}</span><Mono>{cents(order.totalCents)}</Mono></div>
       </div>
 
       <div className="mp-panel" style={{ textAlign: "start", padding: 18, marginBlockEnd: 16 }}>
@@ -536,7 +549,7 @@ export function Confirmation() {
         {t("cust.confirm.note")}
       </p>
       <div className="mp-row" style={{ justifyContent: "center" }}>
-        <button type="button" className="mp-button mp-btn" onClick={() => go("order")}>
+        <button type="button" className="mp-button mp-btn" onClick={() => follow(order.ref)}>
           {t("cust.confirm.follow")}
         </button>
         <button
@@ -603,7 +616,7 @@ export function OrderLookup() {
           </button>
         </div>
 
-        <div className="mp-row" style={{ marginBlockStart: 12, gap: 6 }}>
+        {!LIVE && <div className="mp-row" style={{ marginBlockStart: 12, gap: 6 }}>
           <span style={{ fontSize: 11.5, color: "var(--fg-subtle)" }}>{t("cust.order.try")}</span>
           {["MP-4115", "MP-4118", "MP-4111"].map((ref) => (
             <button
@@ -619,7 +632,7 @@ export function OrderLookup() {
               {ref}
             </button>
           ))}
-        </div>
+        </div>}
       </div>
 
       {result?.kind === "none" && (
@@ -699,8 +712,7 @@ export function OrderLookup() {
                   type="button"
                   className="mp-button mp-button--pos mp-btn"
                   onClick={() => {
-                    approveProof(job.ref);
-                    toast(t("toast.proofApproved", { day: shortDay(job.promisedFor) }), "pos");
+                    afterAction(approveProof(job.ref), () => toast(t("toast.proofApproved", { day: shortDay(job.promisedFor) }), "pos"));
                   }}
                 >
                   <Check size={15} aria-hidden="true" />
@@ -722,9 +734,9 @@ export function OrderLookup() {
                 style={{ marginBlockStart: 9 }}
                 disabled={note.trim().length === 0}
                 onClick={() => {
-                  askChange(job.ref, note.trim());
-                  setNote("");
-                  toast(t("toast.changeSent", { day: shortDay(job.promisedFor) }));
+                  afterAction(askChange(job.ref, note.trim()), () => {
+                    setNote(""); toast(t("toast.changeSent", { day: shortDay(job.promisedFor) }));
+                  });
                 }}
               >
                 {t("cust.order.sendChange")}

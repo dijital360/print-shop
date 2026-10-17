@@ -57,6 +57,7 @@ import {
   type MaterialKey,
 } from "../lib/rates.ts";
 import { useStore } from "../state/store.ts";
+import { afterAction } from "../state/actionResult.ts";
 
 /* ── 7 · TODAY ───────────────────────────────────────────────────────────── */
 
@@ -113,9 +114,10 @@ function Column({ column, iso }: { column: BoardColumn; iso: string }) {
 
   function drop() {
     if (dragging === null) return;
-    moveTo(dragging, column);
-    const refusal = useStore.getState().lastRefusal;
-    if (refusal !== null) toast(t(refusal as never), "warn");
+    afterAction(moveTo(dragging, column), () => {}, () => {
+      const refusal = useStore.getState().lastRefusal;
+      if (refusal !== null) toast(t(refusal as never), "warn");
+    });
   }
 
   return (
@@ -221,9 +223,10 @@ function JobCard({ job, iso, onDrag }: { job: Job; iso: string; onDrag: (ref: st
               type="button"
               className="mp-menu-item"
               onClick={() => {
-                moveTo(job.ref, column);
-                const refusal = useStore.getState().lastRefusal;
-                if (refusal !== null) toast(t(refusal as never), "warn");
+                afterAction(moveTo(job.ref, column), () => {}, () => {
+                  const refusal = useStore.getState().lastRefusal;
+                  if (refusal !== null) toast(t(refusal as never), "warn");
+                });
               }}
             >
               {t(`column.${column}` as never)}
@@ -464,10 +467,12 @@ export function Ticket() {
                   type="button"
                   className="mp-action mp-btn"
                   onClick={() => {
-                    moveTo(job.ref, "finishing");
-                    const refusal = useStore.getState().lastRefusal;
-                    if (refusal !== null) toast(t(refusal as never), "warn");
-                    else toast(t("toast.markedPrinted", { ref: job.ref }));
+                    afterAction(moveTo(job.ref, "finishing"), () => {
+                      toast(t("toast.markedPrinted", { ref: job.ref }));
+                    }, () => {
+                      const refusal = useStore.getState().lastRefusal;
+                      if (refusal !== null) toast(t(refusal as never), "warn");
+                    });
                   }}
                 >
                   <Printer size={16} aria-hidden="true" style={{ color: "var(--info)" }} />
@@ -485,10 +490,12 @@ export function Ticket() {
                   type="button"
                   className="mp-button mp-btn"
                   onClick={() => {
-                    moveTo(job.ref, "ready");
-                    const refusal = useStore.getState().lastRefusal;
-                    if (refusal !== null) toast(t(refusal as never), "warn");
-                    else toast(t("toast.markedReady", { ref: job.ref }), "pos");
+                    afterAction(moveTo(job.ref, "ready"), () => {
+                      toast(t("toast.markedReady", { ref: job.ref }), "pos");
+                    }, () => {
+                      const refusal = useStore.getState().lastRefusal;
+                      if (refusal !== null) toast(t(refusal as never), "warn");
+                    });
                   }}
                 >
                   <PackageCheck size={16} aria-hidden="true" />
@@ -513,8 +520,9 @@ export function Ticket() {
                   type="button"
                   className="mp-button mp-button--pos mp-btn"
                   onClick={() => {
-                    markCollected(job.ref);
-                    toast(t("toast.markedCollected", { ref: job.ref }), "pos");
+                    afterAction(markCollected(job.ref), () => {
+                      toast(t("toast.markedCollected", { ref: job.ref }), "pos");
+                    });
                   }}
                 >
                   <HandCoins size={16} aria-hidden="true" />

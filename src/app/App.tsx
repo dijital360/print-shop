@@ -10,7 +10,7 @@ import { useEffect } from "react";
 
 import { loadConnectedAddOns } from "../add-ons/connected.ts";
 import { demoAddOns } from "../add-ons/registry.ts";
-import { APP_KEY, HOSTED } from "../surface.ts";
+import { APP_KEY, HOSTED, LIVE } from "../surface.ts";
 import { DemoDock } from "../components/DemoDock.tsx";
 import { isConnected } from "../data/source.ts";
 import { Overlays, Toasts } from "../components/Overlays.tsx";
@@ -77,6 +77,7 @@ export default function App() {
    * in that build's bytes — the demo carries no loader and no `fetch`.
    */
   useEffect(() => {
+    if (LIVE) { useStore.getState().registerAddOns([]); return; }
     if (!HOSTED) {
       useStore.getState().registerAddOns(demoAddOns());
       return;
@@ -123,7 +124,7 @@ export default function App() {
       ) : (
         <ShopShell>{body}</ShopShell>
       )}
-      {!isConnected() && <DemoDock />}
+      {!LIVE && !isConnected() && <DemoDock />}
       <Overlays />
       <Toasts />
     </div>

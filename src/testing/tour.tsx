@@ -77,6 +77,12 @@ function seedTheTour(): void {
   store().registerAddOns(demoAddOns());
   store().startConfigure("business-cards");
   store().addToBasket();
+  if (store().placedRef === null) {
+    store().setDetails({ name: "Harbour Bakery", email: "hello@example.test" });
+    store().placeOrder();
+    store().startConfigure("business-cards");
+    store().addToBasket();
+  }
 
   const job = JOBS[0]!;
   store().setLookup({ ref: job.ref, email: "" });

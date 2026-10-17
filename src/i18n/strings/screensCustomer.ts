@@ -129,6 +129,7 @@ export const screensCustomer = {
     "cust.basket.summary": "Summary",
     "cust.basket.goods": "Goods (ex-tax)",
     "cust.basket.place": "Place the order",
+    "cust.basket.orderFailed": "We couldn’t create this order. Check your details and try again; your basket is unchanged.",
 
     // ── Confirmation ──────────────────────────────────────────────────────
     "cust.confirm.title": "That's booked in.",
@@ -372,6 +373,7 @@ export const screensCustomer = {
     "cust.basket.summary": "Übersicht",
     "cust.basket.goods": "Ware (ohne Steuer)",
     "cust.basket.place": "Auftrag erteilen",
+    "cust.basket.orderFailed": "Wir konnten diesen Auftrag nicht anlegen. Prüfen Sie Ihre Angaben und versuchen Sie es erneut. Ihr Warenkorb bleibt unverändert.",
 
     "cust.confirm.title": "Das ist eingeplant.",
     "cust.confirm.lede":
@@ -609,6 +611,7 @@ export const screensCustomer = {
     "cust.basket.summary": "Récapitulatif",
     "cust.basket.goods": "Marchandise (HT)",
     "cust.basket.place": "Passer la commande",
+    "cust.basket.orderFailed": "Nous n’avons pas pu créer cette commande. Vérifiez vos coordonnées et réessayez ; votre panier est inchangé.",
 
     "cust.confirm.title": "C'est enregistré.",
     "cust.confirm.lede":
@@ -845,6 +848,7 @@ export const screensCustomer = {
     "cust.basket.summary": "Souhrn",
     "cust.basket.goods": "Zboží (bez daně)",
     "cust.basket.place": "Odeslat zakázku",
+    "cust.basket.orderFailed": "Tuto zakázku se nepodařilo vytvořit. Zkontrolujte své údaje a zkuste to znovu. Váš košík zůstal beze změny.",
 
     "cust.confirm.title": "Zapsáno.",
     "cust.confirm.lede":
@@ -1079,6 +1083,7 @@ export const screensCustomer = {
     "cust.basket.summary": "Oversigt",
     "cust.basket.goods": "Varer (uden moms)",
     "cust.basket.place": "Afgiv ordren",
+    "cust.basket.orderFailed": "Vi kunne ikke oprette denne ordre. Tjek dine oplysninger, og prøv igen. Din kurv er uændret.",
 
     "cust.confirm.title": "Så er den booket ind.",
     "cust.confirm.lede":
@@ -1306,6 +1311,7 @@ export const screensCustomer = {
     "cust.basket.summary": "小结",
     "cust.basket.goods": "货款（不含税）",
     "cust.basket.place": "提交订单",
+    "cust.basket.orderFailed": "未能创建此订单。请检查您的信息后重试，购物车内容未变。",
 
     "cust.confirm.title": "已排入生产。",
     "cust.confirm.lede": "我们已收到您的作业和文件。您的编号在下方——请保留以便跟踪订单。",
@@ -1529,6 +1535,7 @@ export const screensCustomer = {
     "cust.basket.summary": "小結",
     "cust.basket.goods": "貨款（未稅）",
     "cust.basket.place": "送出訂單",
+    "cust.basket.orderFailed": "無法建立此訂單。請檢查您的資料後重試，購物車內容未變。",
 
     "cust.confirm.title": "已排入生產。",
     "cust.confirm.lede": "我們已收到您的作業和檔案。您的編號在下方——請保留以便追蹤訂單。",
@@ -1757,6 +1764,7 @@ export const screensCustomer = {
     "cust.basket.summary": "الملخص",
     "cust.basket.goods": "البضاعة (قبل الضريبة)",
     "cust.basket.place": "أرسل الطلب",
+    "cust.basket.orderFailed": "تعذّر إنشاء هذا الطلب. راجع بياناتك وحاول مرة أخرى؛ سلة مشترياتك لم تتغيّر.",
 
     "cust.confirm.title": "تم حجزه في الجدول.",
     "cust.confirm.lede":

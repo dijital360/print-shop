@@ -18,6 +18,7 @@ import { cents, clock } from "../lib/format.ts";
 import { priceQuote } from "../lib/quote.ts";
 import { PROOF_BY_POST_CENTS, TAX_RATE } from "../lib/rates.ts";
 import { useStore } from "../state/store.ts";
+import { afterAction } from "../state/actionResult.ts";
 import { NavSheet } from "./Shell.tsx";
 import { Field, Mono, Monogram, Switch, Tag } from "./Primitives.tsx";
 
@@ -169,8 +170,9 @@ function ProofSheet({ jobRef }: { jobRef: string }) {
             className="mp-button mp-btn"
             style={{ flex: 1 }}
             onClick={() => {
-              sendProof(jobRef, note);
-              toast(t("toast.proofSent", { customer: job.customer }), "pos");
+              afterAction(sendProof(jobRef, note), () => {
+                toast(t("toast.proofSent", { customer: job.customer }), "pos");
+              });
             }}
           >
             {t("overlay.proof.send")}
@@ -245,10 +247,11 @@ function SpoilageDialog({ jobRef }: { jobRef: string }) {
             className="mp-button mp-btn"
             style={{ flex: 1 }}
             onClick={() => {
-              addSpoilage(jobRef, Number(sheets));
-              const job = useStore.getState().jobs.find((j) => j.ref === jobRef);
-              const total = job === undefined ? 0 : job.spoiledSheets;
-              toast(t("toast.spoilage", { ref: jobRef, sheets: total }), "warn");
+              afterAction(addSpoilage(jobRef, Number(sheets)), () => {
+                const job = useStore.getState().jobs.find((j) => j.ref === jobRef);
+                const total = job === undefined ? 0 : job.spoiledSheets;
+                toast(t("toast.spoilage", { ref: jobRef, sheets: total }), "warn");
+              });
             }}
           >
             {t("overlay.spoil.confirm")}

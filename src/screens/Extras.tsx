@@ -38,6 +38,7 @@ import { imposition, proofApproved } from "../lib/jobs.ts";
 import { priceQuote, resolveSize } from "../lib/quote.ts";
 import { BLEED_MM, DELIVERY_BANDS, MATERIALS, SAFE_MM } from "../lib/rates.ts";
 import { useStore } from "../state/store.ts";
+import { afterAction } from "../state/actionResult.ts";
 
 /**
  * What the shelf calls an add-on.
@@ -404,8 +405,9 @@ export function Proofs() {
                       className="mp-button mp-button--pos mp-btn"
                       style={{ padding: "8px 14px", fontSize: 12.5 }}
                       onClick={() => {
-                        approveProof(job.ref);
-                        toast(t("toast.proofApproved", { day: shortDay(job.promisedFor) }), "pos");
+                        afterAction(approveProof(job.ref), () => {
+                          toast(t("toast.proofApproved", { day: shortDay(job.promisedFor) }), "pos");
+                        });
                       }}
                     >
                       <Check size={14} aria-hidden="true" />

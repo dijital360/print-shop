@@ -18,6 +18,7 @@ import "./styles/screens.css";
 import { I18nProvider } from "./i18n/index.tsx";
 import { setDataSource } from "./data/source.ts";
 import { clientFromEnv, loadSnapshot, snapshotSource } from "./data/adminiumSource.ts";
+import { LIVE } from "./surface.ts";
 
 const container = document.getElementById("root");
 if (!container) throw new Error("Missing #root — check index.html");
@@ -41,6 +42,11 @@ if (!container) throw new Error("Missing #root — check index.html");
  * working app.
  */
 async function boot(): Promise<void> {
+  if (LIVE) {
+    const { bootLive } = await import("./app/bootLive.tsx");
+    await bootLive(container as HTMLElement);
+    return;
+  }
   const client = clientFromEnv();
   if (client !== null) {
     const snap = await loadSnapshot(client);

@@ -45,6 +45,7 @@ const config: ViteWithVitest = {
    */
   server: {
     proxy: {
+      '/api/shop': { target: 'http://127.0.0.1:4100', changeOrigin: false },
       '/api': {
         target: process.env['ADMINIUM_ORIGIN'] ?? 'http://127.0.0.1:4600',
         changeOrigin: false,

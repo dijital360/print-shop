@@ -72,4 +72,5 @@ export const CONNECTED = !!(
  * deliberate `build:demo` produces, not what you get by forgetting to configure
  * something.
  */
-export const DEMO = !HOSTED && !CONNECTED;
+export const LIVE = import.meta.env.VITE_PRINT_SHOP_MODE === "live";
+export const DEMO = !HOSTED && !CONNECTED && !LIVE;

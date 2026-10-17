@@ -15,6 +15,10 @@ import type { AddOn, AddOnSettings } from "../add-ons/host.ts";
 import { applyAddOnSettings, createRegistry, type AddOnRegistry } from "../add-ons/host.ts";
 import { DEFAULT_ADD_ON_SETTINGS } from "../add-ons/registry.ts";
 import { source } from "../data/source.ts";
+import { getShopGateway } from "../data/shopGateway.ts";
+import { newSubmissionKey } from "../data/shopHttp.ts";
+import type { JobCommand, OrderSubmission } from "../data/shopContract.ts";
+import { t } from "../i18n/ambient.ts";
 import type { ArtworkRecord, Customer, Now, SavedQuote } from "../data/types.ts";
 import { PRODUCT_BY_KEY, type ProductKey } from "../lib/catalogue.ts";
 import type { ArtworkFile } from "../lib/quote.ts";
@@ -25,8 +29,9 @@ import {
   type BoardColumn,
   type Job,
 } from "../lib/jobs.ts";
-import { addWorkingDays, priceQuote, type Configuration } from "../lib/quote.ts";
+import { addWorkingDays, priceQuote, promiseFor, type Configuration } from "../lib/quote.ts";
 import type { StockRow } from "../lib/jobs.ts";
+import { TAX_RATE } from "../lib/rates.ts";
 
 export type Persona = "customer" | "shop";
 
@@ -111,6 +116,19 @@ export interface DeliveryChoice {
   estimatedDelivery: string;
 }
 
+/** An immutable receipt of the submitted basket, independent of later edits. */
+export interface PlacedOrder {
+  ref: string;
+  customer: { name: string; email: string };
+  placedOn: string;
+  readyBy: string;
+  lines: (BasketLine & { jobRef: string; subtotalCents: number; readyBy: string })[];
+  deliveryChoice: DeliveryChoice | null;
+  subtotalCents: number;
+  taxCents: number;
+  totalCents: number;
+}
+
 /**
  * How the whole basket is getting to the customer, DERIVED FROM THE LINES.
  *
@@ -180,6 +198,10 @@ interface State {
   lookup: { ref: string; email: string };
   lookupResult: { kind: "job"; ref: string } | { kind: "quote"; ref: string } | { kind: "none" } | null;
   placedRef: string | null;
+  orders: PlacedOrder[];
+  submittingOrder: boolean;
+  orderAttempt: { key: string; fingerprint: string } | null;
+  pendingJobs: string[];
   sampleSelection: string[];
 
   // works flow
@@ -241,22 +263,23 @@ interface Actions {
   chooseAddOnDelivery: (choice: DeliveryChoice) => void;
   acceptWarning: (filename: string) => void;
   setDetails: (patch: Partial<{ name: string; email: string }>) => void;
-  placeOrder: () => void;
+  placeOrder: () => string | null;
+  submitOrder: () => Promise<string | null>;
   saveQuote: () => void;
   setLookup: (patch: Partial<{ ref: string; email: string }>) => void;
   doLookup: () => void;
-  approveProof: (ref: string) => void;
-  askChange: (ref: string, note: string) => void;
+  approveProof: (ref: string) => boolean | Promise<boolean>;
+  askChange: (ref: string, note: string) => boolean | Promise<boolean>;
   toggleSample: (key: string) => void;
 
   setSearchQuery: (q: string) => void;
   openTicket: (ref: string) => void;
   setBoardMenu: (ref: string | null) => void;
   setDragging: (ref: string | null) => void;
-  moveTo: (ref: string, column: BoardColumn) => void;
-  sendProof: (ref: string, note: string) => void;
-  addSpoilage: (ref: string, sheets: number) => void;
-  markCollected: (ref: string) => void;
+  moveTo: (ref: string, column: BoardColumn) => boolean | Promise<boolean>;
+  sendProof: (ref: string, note: string) => boolean | Promise<boolean>;
+  addSpoilage: (ref: string, sheets: number) => boolean | Promise<boolean>;
+  markCollected: (ref: string) => boolean | Promise<boolean>;
 
   /**
    * Install a registry, seed defaults, and optionally say what is ENABLED.
@@ -331,6 +354,10 @@ export const useStore = create<State & Actions>((set, get) => ({
   lookup: { ref: "", email: "" },
   lookupResult: null,
   placedRef: null,
+  orders: source.orders?.() ?? [],
+  submittingOrder: false,
+  orderAttempt: null,
+  pendingJobs: [],
   sampleSelection: [],
 
   searchQuery: "",
@@ -431,7 +458,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     if (config === null) return;
     lineSeq += 1;
     set({ basket: [...basket, { id: `line-${lineSeq}`, config: { ...config } }] });
-    get().go("artwork");
+    get().go(getShopGateway() === null ? "artwork" : "basket");
   },
 
   removeLine: (id) => set((s) => ({ basket: s.basket.filter((l) => l.id !== id) })),
@@ -498,15 +525,90 @@ export const useStore = create<State & Actions>((set, get) => ({
   setDetails: (patch) => set((s) => ({ details: { ...s.details, ...patch } })),
 
   placeOrder: () => {
-    const ref = source.nextRef();
+    if (getShopGateway() !== null) return null;
+    const state = get();
+    const customer = { name: state.details.name.trim(), email: state.details.email.trim() };
+    if (state.basket.length === 0 || customer.name === "" ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customer.email) ||
+      state.basket.some((line) => !Number.isSafeInteger(line.config.quantity) || line.config.quantity <= 0)) return null;
+    const quotes = state.basket.map((line) => priceQuote(line.config));
+    if (quotes.some((quote) => quote.blocked.length > 0 || !Number.isFinite(quote.totalCents))) return null;
+    const carriage = state.deliveryChoice === null ? 0 : Math.round(state.deliveryChoice.amount * 100);
+    if (!Number.isFinite(carriage) || carriage < 0) return null;
+    const start = /^(.*?)(\d+)$/.exec(source.nextRef());
+    if (start === null) return null;
+    const used = new Set([
+      ...state.jobs.map((job) => job.ref), ...state.pastJobs.map((job) => job.ref),
+      ...state.savedQuotes.map((quote) => quote.ref),
+      ...state.orders.flatMap((order) => [order.ref, ...order.lines.map((line) => line.jobRef)]),
+    ]);
+    let next = Number(start[2]);
+    const refs: string[] = [];
+    while (refs.length < state.basket.length) {
+      if (!Number.isSafeInteger(next) || next < 0) return null;
+      const ref = `${start[1]}${String(next).padStart(start[2]!.length, "0")}`;
+      if (!used.has(ref)) { refs.push(ref); used.add(ref); }
+      next += 1;
+    }
+    const placedOn = state.todayIso();
+    const lines = state.basket.map((line, index) => ({
+      ...line, config: { ...line.config },
+      ...(line.artwork === undefined ? {} : { artwork: { ...line.artwork } }),
+      jobRef: refs[index]!, subtotalCents: quotes[index]!.subtotalCents,
+      readyBy: promiseFor(line.config, { iso: placedOn, hour: state.now.hour }).readyBy,
+    }));
+    const subtotalCents = quotes.reduce((sum, quote) => sum + quote.subtotalCents, 0) + carriage;
+    const taxCents = Math.round(subtotalCents * TAX_RATE);
+    const order: PlacedOrder = {
+      ref: refs[0]!, customer, placedOn, readyBy: lines.map((line) => line.readyBy).sort().at(-1)!,
+      lines, deliveryChoice: state.deliveryChoice === null ? null : { ...state.deliveryChoice },
+      subtotalCents, taxCents, totalCents: subtotalCents + taxCents,
+    };
+    const jobs: Job[] = lines.map((line, index) => ({
+      ref: line.jobRef, productKey: line.config.product, materialKey: line.config.material,
+      customer: customer.name, quantity: line.config.quantity,
+      trimWidthMm: quotes[index]!.size.widthMm, trimHeightMm: quotes[index]!.size.heightMm,
+      sides: line.config.sides, finishKey: line.config.finish, packagingKey: line.config.packaging,
+      stage: "ordered", promisedFor: line.readyBy, express: line.config.express, proofs: [], spoiledSheets: 0,
+    }));
     set({
-      placedRef: ref,
+      orders: [...state.orders, order], jobs: [...state.jobs, ...jobs], placedRef: order.ref,
       basket: [],
       config: null,
       // The quote belonged to the basket that has just gone.
       deliveryChoice: null,
     });
     get().go("confirm");
+    return order.ref;
+  },
+
+  submitOrder: async () => {
+    const gateway = getShopGateway();
+    if (gateway === null) return get().placeOrder();
+    const state = get();
+    if (state.submittingOrder || state.basket.length === 0) return null;
+    const draft = structuredClone({ customer: state.details, lines: state.basket, deliveryChoice: state.deliveryChoice });
+    const fingerprint = JSON.stringify(draft);
+    const attempt = state.orderAttempt?.fingerprint === fingerprint
+      ? state.orderAttempt : { fingerprint, key: newSubmissionKey() };
+    const submission: OrderSubmission = { ...draft, requestKey: attempt.key };
+    set({ submittingOrder: true, orderAttempt: attempt });
+    try {
+      const receipt = await gateway.createOrder(submission);
+      set((current) => ({
+        orders: [...current.orders.filter((order) => order.ref !== receipt.order.ref), receipt.order],
+        jobs: [...current.jobs.filter((job) => !receipt.jobs.some((saved) => saved.ref === job.ref)), ...receipt.jobs],
+        placedRef: receipt.order.ref,
+        ...(current.basket === state.basket ? { basket: [], config: null, deliveryChoice: null } : {}),
+        orderAttempt: null,
+      }));
+      get().go("confirm");
+      return receipt.order.ref;
+    } catch {
+      return null;
+    } finally {
+      set({ submittingOrder: false });
+    }
   },
 
   saveQuote: () => {
@@ -524,8 +626,15 @@ export const useStore = create<State & Actions>((set, get) => ({
   setLookup: (patch) => set((s) => ({ lookup: { ...s.lookup, ...patch } })),
 
   doLookup: () => {
-    const { lookup, jobs, pastJobs, savedQuotes } = get();
+    const { lookup, jobs, pastJobs, savedQuotes, orders } = get();
     const ref = lookup.ref.trim().toUpperCase();
+    if (getShopGateway() !== null) {
+      const order = orders.find((entry) => entry.lines.some((line) => line.jobRef === ref));
+      if (order === undefined || order.customer.email.toLowerCase() !== lookup.email.trim().toLowerCase()) {
+        set({ lookupResult: { kind: "none" } });
+        return;
+      }
+    }
     const job = [...jobs, ...pastJobs].find((j) => j.ref === ref);
     if (job !== undefined) {
       set({ lookupResult: { kind: "job", ref: job.ref } });
@@ -536,6 +645,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   approveProof: (ref) => {
+    if (getShopGateway() !== null) return persistJob(ref, { kind: "approve-proof" });
     const today = get().todayIso();
     set((s) => ({
       jobs: s.jobs.map((j) =>
@@ -544,9 +654,11 @@ export const useStore = create<State & Actions>((set, get) => ({
           : j,
       ),
     }));
+    return true;
   },
 
   askChange: (ref, note) => {
+    if (getShopGateway() !== null) return persistJob(ref, { kind: "ask-change", note });
     const today = get().todayIso();
     set((s) => ({
       jobs: s.jobs.map((j) =>
@@ -560,6 +672,7 @@ export const useStore = create<State & Actions>((set, get) => ({
           : j,
       ),
     }));
+    return true;
   },
 
   toggleSample: (key) =>
@@ -588,21 +701,24 @@ export const useStore = create<State & Actions>((set, get) => ({
    * was at fault.
    */
   moveTo: (ref, column) => {
+    if (getShopGateway() !== null) return persistJob(ref, { kind: "move", column });
     const job = get().jobs.find((j) => j.ref === ref);
-    if (job === undefined) return;
+    if (job === undefined) return false;
     const result = moveJob(job, column);
     set({ boardMenu: null, dragging: null });
     if (!result.ok) {
       set({ lastRefusal: result.reason });
-      return;
+      return false;
     }
     set((s) => ({
       lastRefusal: null,
       jobs: s.jobs.map((j) => (j.ref === ref ? { ...j, stage: result.stage } : j)),
     }));
+    return true;
   },
 
   sendProof: (ref, note) => {
+    if (getShopGateway() !== null) return persistJob(ref, { kind: "send-proof", note });
     const today = get().todayIso();
     set((s) => ({
       jobs: s.jobs.map((j) =>
@@ -616,21 +732,27 @@ export const useStore = create<State & Actions>((set, get) => ({
       ),
       overlay: { kind: "none" },
     }));
+    return true;
   },
 
-  addSpoilage: (ref, sheets) =>
+  addSpoilage: (ref, sheets) => {
+    if (getShopGateway() !== null) return persistJob(ref, { kind: "spoilage", sheets });
     set((s) => ({
       jobs: s.jobs.map((j) => (j.ref === ref ? recordSpoilage(j, sheets) : j)),
       overlay: { kind: "none" },
-    })),
+    }));
+    return true;
+  },
 
   markCollected: (ref) => {
+    if (getShopGateway() !== null) return persistJob(ref, { kind: "collect" });
     const today = get().todayIso();
     set((s) => ({
       jobs: s.jobs.map((j) =>
         j.ref === ref ? { ...j, stage: "collected", dispatch: { kind: "collected", at: today } } : j,
       ),
     }));
+    return true;
   },
 
   // ── add-ons ──────────────────────────────────────────────────────────────
@@ -800,6 +922,29 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   clearSuppliedArtwork: () => set({ suppliedArtwork: null }),
 }));
+
+/** Keep local jobs unchanged until the server acknowledges the write. */
+async function persistJob(ref: string, command: JobCommand): Promise<boolean> {
+  const gateway = getShopGateway();
+  const state = useStore.getState();
+  const job = [...state.jobs, ...state.pastJobs].find((entry) => entry.ref === ref);
+  if (gateway === null || job === undefined || state.pendingJobs.includes(ref)) return false;
+  useStore.setState({ pendingJobs: [...state.pendingJobs, ref], lastRefusal: null });
+  try {
+    const saved = await gateway.changeJob(ref, job.revision ?? 0, command);
+    useStore.setState((current) => ({
+      jobs: current.jobs.map((entry) => entry.ref === ref ? saved : entry),
+      pastJobs: current.pastJobs.map((entry) => entry.ref === ref ? saved : entry),
+      overlay: { kind: "none" }, boardMenu: null, dragging: null,
+    }));
+    return true;
+  } catch {
+    useStore.getState().toast(t("live.changeFailed"), "warn");
+    return false;
+  } finally {
+    useStore.setState((current) => ({ pendingJobs: current.pendingJobs.filter((entry) => entry !== ref) }));
+  }
+}
 
 /** Whether a view belongs to the customer's site or the works floor. */
 export function personaFor(view: View): Persona {

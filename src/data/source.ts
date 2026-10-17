@@ -31,6 +31,7 @@ import {
   WORKS,
 } from './demo.ts';
 import type { ArtworkRecord, Customer, Now, SavedQuote } from './types.ts';
+import type { PlacedOrder } from '../state/store.ts';
 
 /**
  * The works itself — its name, where it is, and two facts the About page prints.
@@ -64,6 +65,7 @@ export interface DataSource {
   artwork(): ArtworkRecord[];
   nextRef(): string;
   works(): Works;
+  orders?(): PlacedOrder[];
 }
 
 /**
@@ -113,6 +115,7 @@ export const source: DataSource = {
   artwork: () => ((read = true), current.artwork()),
   nextRef: () => ((read = true), current.nextRef()),
   works: () => ((read = true), current.works()),
+  orders: () => ((read = true), current.orders?.() ?? []),
 };
 
 /**

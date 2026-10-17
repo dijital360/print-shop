@@ -67,6 +67,9 @@ const read = (file: string) => readFileSync(file, 'utf8');
  * drives both of those rather than asserting them in prose.
  */
 const CONNECTED_SOURCE = 'data/adminiumSource.ts';
+// Cross-tab real write retries need a nonce; deterministic demo paths never call it.
+const LIVE_RETRY_SOURCE = 'data/shopHttp.ts';
+const RETRY_NONCE = 'crypto.randomUUID() — a die that looks like an identifier';
 
 /** The clock half of `IMPURITIES`, by the exact words that file emits. */
 const CLOCKS: readonly string[] = [
@@ -239,6 +242,10 @@ const OURS: readonly InertOrigin[] = [];
  * `affiliationExempt` already applies in the kit.
  */
 const DECLARED_SENDERS: Readonly<Record<string, { means: readonly string[]; why: string }>> = {
+  'data/shopHttp.ts': {
+    means: ['fetch reached through a global'],
+    why: 'Live orders use only relative /api/shop/ routes and same-origin cookies; redirects are refused. See data/shopHttp.test.ts.',
+  },
   'add-ons/connected.ts': {
     /*
      * TWO MEANS, NAMED. Not "this file may send".
@@ -564,6 +571,7 @@ describe('no real third-party call, no real clock', () => {
     const offenders = SHIPPED.flatMap((file) =>
       impuritiesIn(codeOf(file))
         .filter((means) => !(relative(file) === CONNECTED_SOURCE && CLOCKS.includes(means)))
+        .filter((means) => !(relative(file) === LIVE_RETRY_SOURCE && means === RETRY_NONCE))
         .map((means) => `${relative(file)} → ${means}`),
     );
     expect(offenders).toEqual([]);
@@ -579,6 +587,12 @@ describe('no real third-party call, no real clock', () => {
     // so renaming one there fails here instead of quietly widening the net.
     const known = IMPURITIES.map((impurity) => impurity.means);
     expect(CLOCKS.filter((means) => !known.includes(means))).toEqual([]);
+  });
+
+  it('allows only a live retry UUID, refusing clocks and other randomness there', () => {
+    const planted = 'const key = crypto.randomUUID(); const amount = Math.random(); const now = Date.now();';
+    expect(impuritiesIn(planted).filter((means) => means !== RETRY_NONCE)).toEqual(['Date.now() — the real clock', 'Math.random() — a die']);
+    expect(impuritiesIn(codeOf(join(SRC, LIVE_RETRY_SOURCE)))).toEqual([RETRY_NONCE]);
   });
 
   it('would say so if one arrived, in every spelling the three repos disagreed on', () => {
