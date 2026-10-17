@@ -17,7 +17,7 @@ import { DEFAULT_ADD_ON_SETTINGS } from "../add-ons/registry.ts";
 import { source } from "../data/source.ts";
 import { getShopGateway } from "../data/shopGateway.ts";
 import { newSubmissionKey } from "../data/shopHttp.ts";
-import type { JobCommand, OrderSubmission } from "../data/shopContract.ts";
+import type { JobCommand, JobFileKind, OrderSubmission, ShopGateway } from "../data/shopContract.ts";
 import { t } from "../i18n/ambient.ts";
 import type { ArtworkRecord, Customer, Now, SavedQuote } from "../data/types.ts";
 import { PRODUCT_BY_KEY, type ProductKey } from "../lib/catalogue.ts";
@@ -270,6 +270,7 @@ interface Actions {
   doLookup: () => void;
   approveProof: (ref: string) => boolean | Promise<boolean>;
   askChange: (ref: string, note: string) => boolean | Promise<boolean>;
+  uploadJobFile: (ref: string, kind: JobFileKind, file: File, note?: string) => Promise<boolean>;
   toggleSample: (key: string) => void;
 
   setSearchQuery: (q: string) => void;
@@ -644,6 +645,9 @@ export const useStore = create<State & Actions>((set, get) => ({
     set({ lookupResult: quote !== undefined ? { kind: "quote", ref: quote.ref } : { kind: "none" } });
   },
 
+  uploadJobFile: (ref, kind, file, note) => persistJobWrite(ref,
+    (gateway, job) => gateway.uploadJobFile(ref, job.revision ?? 0, kind, file, note)),
+
   approveProof: (ref) => {
     if (getShopGateway() !== null) return persistJob(ref, { kind: "approve-proof" });
     const today = get().todayIso();
@@ -925,13 +929,17 @@ export const useStore = create<State & Actions>((set, get) => ({
 
 /** Keep local jobs unchanged until the server acknowledges the write. */
 async function persistJob(ref: string, command: JobCommand): Promise<boolean> {
+  return persistJobWrite(ref, (gateway, job) => gateway.changeJob(ref, job.revision ?? 0, command));
+}
+
+async function persistJobWrite(ref: string, write: (gateway: ShopGateway, job: Job) => Promise<Job>): Promise<boolean> {
   const gateway = getShopGateway();
   const state = useStore.getState();
   const job = [...state.jobs, ...state.pastJobs].find((entry) => entry.ref === ref);
   if (gateway === null || job === undefined || state.pendingJobs.includes(ref)) return false;
   useStore.setState({ pendingJobs: [...state.pendingJobs, ref], lastRefusal: null });
   try {
-    const saved = await gateway.changeJob(ref, job.revision ?? 0, command);
+    const saved = await write(gateway, job);
     useStore.setState((current) => ({
       jobs: current.jobs.map((entry) => entry.ref === ref ? saved : entry),
       pastJobs: current.pastJobs.map((entry) => entry.ref === ref ? saved : entry),

@@ -123,6 +123,20 @@ describe('the proof gate', () => {
     }
   });
 
+  it('keeps file-backed jobs locked when an approval has no matching current proof', () => {
+    const artwork = { id: 'artwork-1', kind: 'artwork' as const, filename: 'artwork.pdf', mediaType: 'application/pdf' as const, size: 30, uploadedAt: '2026-08-05T10:20:00Z' };
+    const proof = { ...artwork, id: 'proof-1', kind: 'proof' as const, filename: 'proof.pdf' };
+    const legacy = job({ files: [], proofs: [{ kind: 'approved', at: TODAY }] });
+    expect(proofApproved(legacy)).toBe(false);
+    expect(isLocked(legacy)).toBe(true);
+    expect(moveJob(legacy, 'printing').ok).toBe(false);
+    const approved = job({ files: [artwork, proof], proofs: [{ kind: 'approved', at: TODAY, fileId: proof.id }] });
+    expect(proofApproved(approved)).toBe(true);
+    expect(moveJob(approved, 'printing').ok).toBe(true);
+    expect(proofApproved({ ...approved, files: [artwork, proof, { ...proof, id: 'proof-2' }] })).toBe(false);
+    expect(proofApproved({ ...approved, files: [proof] })).toBe(false);
+  });
+
   it('never gates a move that does not leave prepress', () => {
     expect(moveJob(job({ stage: 'printing' }), 'finishing').ok).toBe(true);
     expect(moveJob(job({ stage: 'finishing' }), 'ready').ok).toBe(true);

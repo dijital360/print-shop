@@ -27,7 +27,7 @@ beforeEach(() => {
   localStorage.setItem("print-shop-locale", "en-US");
   useStore.setState(useStore.getInitialState(), true);
   gateway = {
-    bootstrap: vi.fn(), createOrder: vi.fn(), changeJob: vi.fn(),
+    bootstrap: vi.fn(), createOrder: vi.fn(), changeJob: vi.fn(), uploadJobFile: vi.fn(),
     login: vi.fn().mockResolvedValue(undefined), logout: vi.fn().mockResolvedValue(undefined),
   };
   configureShopGateway(gateway);

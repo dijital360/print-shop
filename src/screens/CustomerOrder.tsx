@@ -14,6 +14,7 @@ import { useState } from "react";
 import { AddOnSlot } from "../components/AddOnSlot.tsx";
 import { checkoutItems, outboundOrderFor, shopClock, SHOP_ORIGIN } from "../add-ons/records.ts";
 import { EmptyState, Field, Mono, Tag, Tile, Typed } from "../components/Primitives.tsx";
+import { currentProofFile, JobFiles } from "../components/JobFiles.tsx";
 import { useI18n, useT } from "../i18n/index.tsx";
 import { PRODUCT_BY_KEY } from "../lib/catalogue.ts";
 import { cents, day, mm, num, shortDay } from "../lib/format.ts";
@@ -576,6 +577,7 @@ export function OrderLookup() {
   const pastJobs = useStore((s) => s.pastJobs);
   const approveProof = useStore((s) => s.approveProof);
   const askChange = useStore((s) => s.askChange);
+  const pendingJobs = useStore((s) => s.pendingJobs);
   const artwork = useStore((s) => s.artwork);
   const toast = useStore((s) => s.toast);
   const [note, setNote] = useState("");
@@ -699,7 +701,9 @@ export function OrderLookup() {
             </div>
           </div>
 
-          {!proofApproved(job) && job.proofs.some((p) => p.kind === "sent") && (
+          {LIVE && <JobFiles key={job.ref} job={job} side="customer" />}
+
+          {!proofApproved(job) && (LIVE ? currentProofFile(job) !== null : job.proofs.some((p) => p.kind === "sent")) && (
             <div className="mp-panel" style={{ padding: 18, borderColor: "var(--accent)", borderWidth: 1.5 }}>
               <div className="mp-row" style={{ marginBlockEnd: 14 }}>
                 <span style={{ fontSize: 15, fontWeight: 800 }}>{t("cust.order.proofWaiting")}</span>
@@ -711,6 +715,7 @@ export function OrderLookup() {
                 <button
                   type="button"
                   className="mp-button mp-button--pos mp-btn"
+                  disabled={LIVE && pendingJobs.includes(job.ref)}
                   onClick={() => {
                     afterAction(approveProof(job.ref), () => toast(t("toast.proofApproved", { day: shortDay(job.promisedFor) }), "pos"));
                   }}
@@ -724,6 +729,8 @@ export function OrderLookup() {
                   className="mp-input mp-fld"
                   rows={3}
                   value={note}
+                  maxLength={LIVE ? 1000 : undefined}
+                  disabled={LIVE && pendingJobs.includes(job.ref)}
                   onChange={(e) => setNote(e.target.value)}
                   placeholder={t("cust.order.askPlaceholder")}
                 />
@@ -732,7 +739,7 @@ export function OrderLookup() {
                 type="button"
                 className="mp-button mp-button--ghost mp-btn"
                 style={{ marginBlockStart: 9 }}
-                disabled={note.trim().length === 0}
+                disabled={note.trim().length === 0 || (LIVE && pendingJobs.includes(job.ref))}
                 onClick={() => {
                   afterAction(askChange(job.ref, note.trim()), () => {
                     setNote(""); toast(t("toast.changeSent", { day: shortDay(job.promisedFor) }));
@@ -768,7 +775,7 @@ export function OrderLookup() {
             </div>
           )}
 
-          <div className="mp-panel" style={{ padding: 18 }}>
+          {!LIVE && <div className="mp-panel" style={{ padding: 18 }}>
             <div style={{ fontSize: 14, fontWeight: 800, marginBlockEnd: 12 }}>
               {t("cust.order.artwork")}
             </div>
@@ -808,7 +815,7 @@ export function OrderLookup() {
                   ));
                 })}
             </div>
-          </div>
+          </div>}
 
           {/* SLOT 3 of 4 — the dispatch panel, speaking when empty. */}
           <div className="mp-panel" style={{ padding: 18 }}>

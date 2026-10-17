@@ -57,7 +57,7 @@ beforeEach(() => {
     details: { ...receipt.order.customer },
     basket: receipt.order.lines.map(({ id, config }) => ({ id, config: { ...config } })),
   });
-  gateway = { bootstrap: vi.fn(), createOrder: vi.fn(), changeJob: vi.fn(), login: vi.fn(), logout: vi.fn() };
+  gateway = { bootstrap: vi.fn(), createOrder: vi.fn(), changeJob: vi.fn(), uploadJobFile: vi.fn(), login: vi.fn(), logout: vi.fn() };
   configureShopGateway(gateway);
   host = document.createElement("div");
   document.body.appendChild(host);

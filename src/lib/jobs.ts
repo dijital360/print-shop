@@ -6,6 +6,7 @@
  */
 
 import { BLEED_MM, SRA3_PRINTABLE } from './rates.ts';
+import type { JobFile } from '../data/shopContract.ts';
 
 // ── imposition ───────────────────────────────────────────────────────────────
 
@@ -99,6 +100,8 @@ export interface ProofEvent {
   /** ISO date. */
   at: string;
   note?: string;
+  /** The exact persisted proof version shown to the customer. */
+  fileId?: string;
 }
 
 export interface Job {
@@ -119,6 +122,7 @@ export interface Job {
   promisedFor: string;
   express: boolean;
   proofs: ProofEvent[];
+  files?: JobFile[];
   /** Sheets added by spoilage, on top of what the imposition says the run needs. */
   spoiledSheets: number;
   /** Set once the job leaves the works. */
@@ -127,7 +131,13 @@ export interface Job {
 
 /** A job cannot leave prepress until its proof is approved. */
 export function proofApproved(job: Job): boolean {
-  return job.proofs.at(-1)?.kind === 'approved';
+  const latest = job.proofs.at(-1);
+  if (latest?.kind !== 'approved') return false;
+  // Demo records omit files; server snapshots always include the actual versions.
+  if (job.files === undefined) return true;
+  const proof = job.files.filter((file) => file.kind === 'proof').at(-1);
+  return latest.fileId !== undefined && proof?.id === latest.fileId
+    && job.files.some((file) => file.kind === 'artwork');
 }
 
 /** True when the board should draw the padlock. */

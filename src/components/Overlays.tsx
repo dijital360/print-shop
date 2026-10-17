@@ -21,6 +21,8 @@ import { useStore } from "../state/store.ts";
 import { afterAction } from "../state/actionResult.ts";
 import { NavSheet } from "./Shell.tsx";
 import { Field, Mono, Monogram, Switch, Tag } from "./Primitives.tsx";
+import { JobFiles } from "./JobFiles.tsx";
+import { LIVE } from "../surface.ts";
 
 export function Overlays() {
   const overlay = useStore((s) => s.overlay);
@@ -159,6 +161,11 @@ function ProofSheet({ jobRef }: { jobRef: string }) {
 
   const job = jobs.find((j) => j.ref === jobRef);
   if (job === undefined) return null;
+  if (LIVE) return (
+    <Modal title={t("live.files.proofTitle")} foot={<button type="button" className="mp-button mp-button--ghost mp-btn" onClick={close}>{t("common.close")}</button>}>
+      <JobFiles key={job.ref} job={job} side="staff" />
+    </Modal>
+  );
 
   return (
     <Modal

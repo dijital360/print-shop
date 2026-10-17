@@ -9,7 +9,7 @@ function basket() {
   store().setDetails({ name: "Customer", email: "customer@example.test" });
 }
 function gateway(): ShopGateway {
-  return { bootstrap: vi.fn(), createOrder: vi.fn().mockResolvedValue(structuredClone(receipt)), changeJob: vi.fn(), login: vi.fn(), logout: vi.fn() };
+  return { bootstrap: vi.fn(), createOrder: vi.fn().mockResolvedValue(structuredClone(receipt)), changeJob: vi.fn(), uploadJobFile: vi.fn(), login: vi.fn(), logout: vi.fn() };
 }
 beforeEach(() => {
   configureShopGateway(null); useStore.setState(useStore.getInitialState(), true); basket();
@@ -54,5 +54,32 @@ describe("acknowledged live orders", () => {
   });
   it("never mints a live retry key for a demo order", () => {
     const nonce = vi.spyOn(crypto, "randomUUID"); basket(); expect(store().placeOrder()).not.toBeNull(); expect(nonce).not.toHaveBeenCalled();
+  });
+  it("waits for a file acknowledgement and locks competing changes to the same job", async () => {
+    const api = gateway(); configureShopGateway(api);
+    const job = { ...receipt.jobs[0]!, revision: 3 };
+    useStore.setState({ jobs: [job], pendingJobs: [], toasts: [] });
+    let acknowledge!: (value: typeof job) => void;
+    vi.mocked(api.uploadJobFile).mockReturnValue(new Promise((resolve) => { acknowledge = resolve; }));
+    const file = new File(["%PDF-1.4\n%%EOF"], "original.pdf", { type: "application/pdf" });
+    const request = store().uploadJobFile(job.ref, "artwork", file);
+    expect(store().jobs[0]).toBe(job);
+    expect(store().pendingJobs).toEqual([job.ref]);
+    expect(await store().uploadJobFile(job.ref, "artwork", file)).toBe(false);
+    expect(await store().approveProof(job.ref)).toBe(false);
+    expect(api.changeJob).not.toHaveBeenCalled();
+    expect(api.uploadJobFile).toHaveBeenCalledWith(job.ref, 3, "artwork", file, undefined);
+    const saved = { ...job, revision: 4, files: [{ id: "file-1", kind: "artwork" as const, filename: "original.pdf", mediaType: "application/pdf" as const, size: file.size, uploadedAt: "2026-10-17T09:00:00.000Z" }] };
+    acknowledge(saved);
+    expect(await request).toBe(true); expect(store().jobs[0]).toEqual(saved); expect(store().pendingJobs).toEqual([]);
+  });
+  it("keeps the previous file version and proof state when upload fails", async () => {
+    const api = gateway(); configureShopGateway(api);
+    const job = { ...receipt.jobs[0]!, revision: 9 };
+    useStore.setState({ jobs: [job], pendingJobs: [], toasts: [] });
+    vi.mocked(api.uploadJobFile).mockRejectedValue(new Error("Unavailable"));
+    const result = await store().uploadJobFile(job.ref, "proof", new File(["%PDF-1.4\n%%EOF"], "proof.pdf", { type: "application/pdf" }), "Review");
+    expect(result).toBe(false); expect(store().jobs[0]).toBe(job); expect(store().pendingJobs).toEqual([]);
+    expect(store().toasts.at(-1)?.tone).toBe("warn");
   });
 });

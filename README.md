@@ -170,9 +170,9 @@ By default, embedded PostgreSQL persists in `.print-shop.local/database`, which
 Git ignores. **Stop the API/dev server before using `shop:staff` with this local
 database.** The embedded database permits one process at a time. Alternatively,
 supply `DATABASE_URL` through the process environment for conventional PostgreSQL.
-Both use `db/schema.sql` and additive `db/migrations/001-orders.sql`; existing
-trade data is preserved. Local validation uses PGlite; an external PostgreSQL
-service has not been exercised in this environment.
+Both use `db/schema.sql` and the additive migrations in `db/migrations/`;
+existing trade data is preserved. Local validation uses PGlite; an external
+PostgreSQL service has not been exercised in this environment.
 
 Customer access is an HttpOnly cookie capability for orders created in that
 browser, valid for 30 days. Clearing cookies, another browser or an expired
@@ -182,14 +182,33 @@ submission does not duplicate orders, and stale production changes are refused.
 Replacement proofs require a fresh approval. Asking for a change extends the
 current job's promise by one working day while preserving the original receipt.
 
-This milestone records unpaid orders. Original artwork uploads, email access
-recovery, payment/carrier integrations and an editable rate card remain pending.
+After placing an order, customers upload artwork against the appropriate line's
+job reference from the tracking screen. PDF, PNG and JPEG files are supported,
+up to 10 MiB per file and 20 stored versions per job across artwork and proofs.
+The final slot is reserved for a proof so new artwork can still be reviewed.
+Files are stored as PostgreSQL `bytea` alongside the order, so database backups
+include the originals and proofs. Downloads require the owning customer's
+session or an authenticated staff session.
+
+Staff download the original artwork and upload a real proof file to publish it.
+The proof file and its publication event are saved in one transaction. Customers
+preview PNG/JPEG proofs inline and open PDF proofs in a new tab or download them.
+New artwork invalidates the previous approval and requires a new proof;
+production remains blocked until artwork is stored and its current proof is
+approved. Uploads check file type, signature, extension and size, but do not
+perform automated print-ready preflight or virus scanning.
+
+This milestone records unpaid orders. Email access recovery, payment/carrier
+integrations, an editable rate card and automated preflight remain pending.
 Review the example prices before operational use. Live checkout omits simulated
-uploads, card details, add-ons and the fictional shop address.
+uploads, card details, add-ons and the fictional shop address; actual artwork is
+uploaded after the order is placed. File storage needs no new environment
+variables or dependencies.
 
 For deployment, provide an exact HTTPS `PRINT_SHOP_PUBLIC_ORIGIN`, persistent
 database storage/backups and a reverse proxy for `/api/shop`. Create the owner's
-staff account before exposing the site. These code changes do not deploy or
+staff account before exposing the site and allow 10 MiB upload bodies at the
+proxy. These code changes do not deploy or
 publish the application.
 
 ```sh

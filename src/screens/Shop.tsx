@@ -27,6 +27,7 @@ import {
 import { AddOnSlot } from "../components/AddOnSlot.tsx";
 import { outboundOrderFor, shopClock } from "../add-ons/records.ts";
 import { EmptyState, Mono, Tag, Tile, Typed } from "../components/Primitives.tsx";
+import { JobFiles } from "../components/JobFiles.tsx";
 import { useT } from "../i18n/index.tsx";
 import { PRODUCT_BY_KEY, type ProductKey } from "../lib/catalogue.ts";
 import { cents, day, dueLabel, flatTint, mm, multiplier, num, packagingHint, shortDay } from "../lib/format.ts";
@@ -58,6 +59,7 @@ import {
 } from "../lib/rates.ts";
 import { useStore } from "../state/store.ts";
 import { afterAction } from "../state/actionResult.ts";
+import { LIVE } from "../surface.ts";
 
 /* ── 7 · TODAY ───────────────────────────────────────────────────────────── */
 
@@ -347,7 +349,7 @@ export function Ticket() {
             )}
           </div>
 
-          <div className="mp-panel mp-panel-pad">
+          {LIVE ? <JobFiles key={job.ref} job={job} side="staff" /> : <div className="mp-panel mp-panel-pad">
             <div style={{ fontSize: 14, fontWeight: 800, marginBlockEnd: 11 }}>
               {t("shop.ticket.artwork")}
             </div>
@@ -387,7 +389,7 @@ export function Ticket() {
                 <div style={{ fontSize: 12.5, color: "var(--fg-subtle)" }}>{t("common.nothingHere")}</div>
               )}
             </div>
-          </div>
+          </div>}
 
           <div className="mp-panel mp-panel-pad">
             <div style={{ fontSize: 14, fontWeight: 800, marginBlockEnd: 11 }}>
@@ -455,14 +457,14 @@ export function Ticket() {
             </div>
             {!ready ? (
               <div className="mp-actions">
-                <button
+                {!LIVE && <button
                   type="button"
                   className="mp-action mp-btn"
                   onClick={() => openOverlay({ kind: "proof-sheet", ref: job.ref })}
                 >
                   <Send size={16} aria-hidden="true" style={{ color: "var(--accent)" }} />
                   {t("shop.ticket.sendProof")}
-                </button>
+                </button>}
                 <button
                   type="button"
                   className="mp-action mp-btn"

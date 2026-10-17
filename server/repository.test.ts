@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { OrderSubmission } from "../src/data/shopContract.ts";
+import { MAX_JOB_FILE_BYTES, MAX_JOB_FILES, type OrderSubmission } from "../src/data/shopContract.ts";
+import type { Job } from "../src/lib/jobs.ts";
 import { addWorkingDays, priceQuote } from "../src/lib/quote.ts";
 import { TAX_RATE } from "../src/lib/rates.ts";
 import { openDatabase } from "./database.ts";
@@ -16,6 +17,34 @@ const STAFF = { side: "staff" } as const;
 const CUSTOMER = { side: "customer", customerHash: OWNER } as const;
 const OTHER_CUSTOMER = { side: "customer", customerHash: OTHER_OWNER } as const;
 const fixtures: { directory: string; close: () => Promise<void> }[] = [];
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==", "base64");
+const JPEG = Buffer.from("/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAB//2Q==", "base64");
+
+function pdfFixture(): Uint8Array {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] /Contents 4 0 R >>",
+    "<< /Length 0 >>\nstream\n\nendstream",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  pdf += offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  pdf += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf);
+}
+
+const PDF = pdfFixture();
+const artworkInput = () => ({ kind: "artwork" as const, filename: "artwork.png", mediaType: "image/png", bytes: new Uint8Array(PNG) });
+const proofInput = (note = "Proof for review") => ({ kind: "proof" as const, filename: "proof.pdf", mediaType: "application/pdf", bytes: new Uint8Array(PDF), note });
+const uploadArtwork = (repository: ShopRepository, job: Job) => repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, artworkInput());
+const uploadProof = (repository: ShopRepository, job: Job, note?: string) => repository.uploadJobFile(STAFF, job.ref, job.revision!, proofInput(note));
 
 function submission(requestKey = "order-request-0001"): OrderSubmission {
   return {
@@ -198,12 +227,15 @@ describe("durable shop orders", () => {
   it("permits production changes only for staff and proof decisions only for the owner", async () => {
     const { repository } = await fixture();
     const receipt = await repository.createOrder(OWNER, submission());
-    const job = receipt.jobs[0]!;
+    let job = receipt.jobs[0]!;
     await expect(repository.changeJob(CUSTOMER, job.ref, 0, { kind: "move", column: "printing" }))
       .rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
     await expect(repository.changeJob(CUSTOMER, job.ref, 0, { kind: "send-proof", note: "Proof" }))
       .rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
-    const proofed = await repository.changeJob(STAFF, job.ref, 0, { kind: "send-proof", note: "First proof" });
+    await expect(repository.changeJob(STAFF, job.ref, 0, { kind: "send-proof", note: "First proof" }))
+      .rejects.toMatchObject({ status: 409, code: "PROOF_FILE_REQUIRED" });
+    job = await uploadArtwork(repository, job);
+    const proofed = await uploadProof(repository, job, "First proof");
     await expect(repository.changeJob(STAFF, job.ref, proofed.revision!, { kind: "approve-proof" }))
       .rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
     const approved = await repository.changeJob(CUSTOMER, job.ref, proofed.revision!, { kind: "approve-proof" });
@@ -216,9 +248,9 @@ describe("durable shop orders", () => {
     const { repository } = await fixture();
     const receipt = await repository.createOrder(OWNER, submission());
     const job = receipt.jobs[0]!;
-    const updated = await repository.changeJob(STAFF, job.ref, 0, { kind: "send-proof", note: "Current proof" });
+    const updated = await uploadArtwork(repository, job);
     expect(updated.revision).toBe(1);
-    await expect(repository.changeJob(STAFF, job.ref, 0, { kind: "send-proof", note: "Stale tab" }))
+    await expect(repository.uploadJobFile(CUSTOMER, job.ref, 0, artworkInput()))
       .rejects.toMatchObject({ status: 409, code: "CONFLICT" });
     expect((await repository.snapshot(CUSTOMER)).jobs).toEqual([updated]);
   });
@@ -229,14 +261,21 @@ describe("durable shop orders", () => {
     const receipt = await repository.createOrder(OWNER, submission());
     let job = receipt.jobs[0]!;
     const originalPromise = job.promisedFor;
-    job = await repository.changeJob(STAFF, job.ref, 0, { kind: "send-proof", note: "Version one" });
+    job = await uploadArtwork(repository, job);
+    job = await uploadProof(repository, job, "Version one");
+    const firstProof = job.files!.at(-1)!.id;
     job = await repository.changeJob(CUSTOMER, job.ref, job.revision!, { kind: "approve-proof" });
-    job = await repository.changeJob(STAFF, job.ref, job.revision!, { kind: "send-proof", note: "Version two" });
+    expect(job.proofs.at(-1)?.fileId).toBe(firstProof);
+    job = await uploadProof(repository, job, "Version two");
+    const replacementProof = job.files!.at(-1)!.id;
+    expect(replacementProof).not.toBe(firstProof);
+    expect(job.proofs.at(-1)?.fileId).toBe(replacementProof);
     expect(job.stage).toBe("proofed");
     await expect(repository.changeJob(STAFF, job.ref, job.revision!, { kind: "move", column: "printing" }))
       .rejects.toMatchObject({ status: 409, code: "PROOF_REQUIRED" });
     expect((await repository.snapshot(CUSTOMER)).jobs).toEqual([job]);
     job = await repository.changeJob(CUSTOMER, job.ref, job.revision!, { kind: "ask-change", note: "Please revise the colour" });
+    expect(job.proofs.at(-1)?.fileId).toBe(replacementProof);
     expect(job.promisedFor).toBe(addWorkingDays(originalPromise, 1));
     repository = await setup.reopen();
     const persisted = await repository.snapshot(CUSTOMER);
@@ -247,7 +286,7 @@ describe("durable shop orders", () => {
     expect(persisted.orders[0]!.lines[0]!.readyBy).toBe(originalPromise);
     await expect(repository.changeJob(STAFF, job.ref, job.revision!, { kind: "move", column: "printing" }))
       .rejects.toMatchObject({ status: 409, code: "PROOF_REQUIRED" });
-    job = await repository.changeJob(STAFF, job.ref, job.revision!, { kind: "send-proof", note: "Version three" });
+    job = await uploadProof(repository, job, "Version three");
     job = await repository.changeJob(CUSTOMER, job.ref, job.revision!, { kind: "approve-proof" });
     job = await repository.changeJob(STAFF, job.ref, job.revision!, { kind: "move", column: "printing" });
     expect(job.stage).toBe("printing");
@@ -386,7 +425,8 @@ describe("durable shop orders", () => {
     await expect(setup.repository.changeJob(STAFF, job.ref, 0, { kind: "collect" })).rejects.toMatchObject({ status: 409 });
     job = await setup.repository.changeJob(STAFF, job.ref, 0, { kind: "spoilage", sheets: 3 });
     expect(job.spoiledSheets).toBe(3);
-    job = await setup.repository.changeJob(STAFF, job.ref, job.revision!, { kind: "send-proof", note: "Ready for review" });
+    job = await uploadArtwork(setup.repository, job);
+    job = await uploadProof(setup.repository, job, "Ready for review");
     job = await setup.repository.changeJob(CUSTOMER, job.ref, job.revision!, { kind: "approve-proof" });
     job = await setup.repository.changeJob(STAFF, job.ref, job.revision!, { kind: "move", column: "ready" });
     job = await setup.repository.changeJob(STAFF, job.ref, job.revision!, { kind: "collect" });
@@ -399,5 +439,206 @@ describe("durable shop orders", () => {
     expect((await setup.database.query("SELECT kind,sheets FROM public.stock_movements")).rows).toEqual([{ kind: "spoilage", sheets: 3 }]);
     await expect(reopened.changeJob(STAFF, job.ref, job.revision!, { kind: "move", column: "printing" })).rejects.toMatchObject({ status: 409 });
     await expect(reopened.changeJob(STAFF, job.ref, job.revision!, { kind: "spoilage", sheets: 1 })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("persists private file bytes and exposes only metadata in job snapshots", async () => {
+    const setup = await fixture();
+    const receipt = await setup.repository.createOrder(OWNER, submission());
+    const initial = receipt.jobs[0]!;
+    const commonName = "Ada's [final] & proof!.png";
+    let job = await setup.repository.uploadJobFile(CUSTOMER, initial.ref, initial.revision!, { ...artworkInput(), filename: commonName });
+    job = await setup.repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, {
+      kind: "artwork", filename: "photograph.jpeg", mediaType: "image/jpeg", bytes: JPEG,
+    });
+    job = await uploadProof(setup.repository, job, "Please review the uploaded PDF");
+    const files = job.files!;
+    expect(files[0]!.filename).toBe(commonName);
+    expect(files.map((file) => file.mediaType)).toEqual(["image/png", "image/jpeg", "application/pdf"]);
+    expect(new Set(files.map((file) => file.id)).size).toBe(3);
+    for (const file of files) {
+      expect(Object.keys(file).sort()).toEqual(["filename", "id", "kind", "mediaType", "size", "uploadedAt"]);
+      expect(file.uploadedAt).toBe(INSTANT.toISOString());
+    }
+    expect(job.proofs.at(-1)).toMatchObject({ kind: "sent", note: "Please review the uploaded PDF", fileId: files[2]!.id });
+    const reopened = await setup.reopen();
+    const snapshot = await reopened.snapshot(CUSTOMER);
+    expect(snapshot.jobs).toEqual([job]);
+    expect(snapshot.orders).toEqual([receipt.order]);
+    for (const [index, bytes] of [PNG, JPEG, PDF].entries()) {
+      const downloaded = await reopened.readJobFile(CUSTOMER, job.ref, files[index]!.id);
+      expect(downloaded.file).toEqual(files[index]);
+      expect(downloaded.file.size).toBe(bytes.length);
+      expect(Array.from(downloaded.bytes)).toEqual(Array.from(bytes));
+      expect(Array.from((await reopened.readJobFile(STAFF, job.ref, files[index]!.id)).bytes)).toEqual(Array.from(bytes));
+    }
+  });
+
+  it("scopes file uploads and downloads to the owner and staff and restricts upload roles", async () => {
+    const { repository } = await fixture();
+    let job = (await repository.createOrder(OWNER, submission())).jobs[0]!;
+    await expect(repository.uploadJobFile(STAFF, job.ref, job.revision!, artworkInput()))
+      .rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
+    await expect(repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, proofInput()))
+      .rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
+    await expect(repository.uploadJobFile(OTHER_CUSTOMER, job.ref, job.revision!, artworkInput()))
+      .rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
+    job = await uploadArtwork(repository, job);
+    const artworkId = job.files![0]!.id;
+    await expect(repository.readJobFile(OTHER_CUSTOMER, job.ref, artworkId))
+      .rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
+    const other = (await repository.createOrder(OTHER_OWNER, submission())).jobs[0]!;
+    await expect(repository.readJobFile(OTHER_CUSTOMER, other.ref, artworkId))
+      .rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
+    await expect(repository.readJobFile(CUSTOMER, job.ref, "00000000-0000-0000-0000-000000000000"))
+      .rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
+    job = await uploadProof(repository, job);
+    job = await repository.changeJob(CUSTOMER, job.ref, job.revision!, { kind: "approve-proof" });
+    job = await repository.changeJob(STAFF, job.ref, job.revision!, { kind: "move", column: "printing" });
+    await expect(repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, artworkInput())).rejects.toMatchObject({ status: 409 });
+    await expect(repository.uploadJobFile(STAFF, job.ref, job.revision!, proofInput())).rejects.toMatchObject({ status: 409 });
+    expect(Array.from((await repository.readJobFile(CUSTOMER, job.ref, artworkId)).bytes)).toEqual(Array.from(PNG));
+  });
+
+  it("rejects unsafe names, MIME mismatches and malformed or truncated files without saving them", async () => {
+    const { repository } = await fixture();
+    const job = (await repository.createOrder(OWNER, submission())).jobs[0]!;
+    const zeroWidth = new Uint8Array(PNG);
+    zeroWidth.fill(0, 16, 20);
+    const invalid = [
+      { filename: "../artwork.png" }, { filename: "/artwork.png" }, { filename: "folder\\artwork.png" },
+      { filename: "bad\r\nname.png" }, { filename: "bad\u0000name.png" }, { filename: `${"a".repeat(256)}.png` },
+      { filename: "artwork.exe" }, { filename: "artwork.pdf" }, { mediaType: "text/html" },
+      { mediaType: "application/pdf", filename: "artwork.pdf" },
+      { bytes: new Uint8Array() }, { bytes: Buffer.from("<html>not an image</html>") },
+      { bytes: PNG.subarray(0, PNG.length - 12) }, { bytes: zeroWidth },
+      { filename: "artwork.pdf", mediaType: "application/pdf", bytes: Buffer.from("%PDF-1.4\nMissing the end marker") },
+      { filename: "artwork.jpg", mediaType: "image/jpeg", bytes: JPEG.subarray(0, JPEG.length - 2) },
+    ];
+    for (const patch of invalid) {
+      await expect(repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, { ...artworkInput(), ...patch }))
+        .rejects.toMatchObject({ status: 400, code: "INVALID_FILE" });
+    }
+    expect((await repository.snapshot(CUSTOMER)).jobs).toEqual([job]);
+    expect((await repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, { ...artworkInput(), filename: "Artwork.PNG" })).files)
+      .toHaveLength(1);
+  });
+
+  it("requires real artwork and file-backed proofs rather than filename metadata or a text-only send", async () => {
+    const { repository } = await fixture();
+    let job = (await repository.createOrder(OWNER, submission())).jobs[0]!;
+    expect(job.files ?? []).toEqual([]);
+    await expect(uploadProof(repository, job)).rejects.toMatchObject({ status: 409, code: "ARTWORK_REQUIRED" });
+    await expect(repository.changeJob(STAFF, job.ref, job.revision!, { kind: "send-proof", note: "No uploaded proof" }))
+      .rejects.toMatchObject({ status: 409, code: "PROOF_FILE_REQUIRED" });
+    await expect(repository.changeJob(STAFF, job.ref, job.revision!, { kind: "move", column: "printing" }))
+      .rejects.toMatchObject({ status: 409 });
+    job = await uploadArtwork(repository, job);
+    await expect(repository.changeJob(CUSTOMER, job.ref, job.revision!, { kind: "approve-proof" }))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await repository.snapshot(CUSTOMER)).jobs).toEqual([job]);
+  });
+
+  it("invalidates approval when replacement artwork arrives and requires a fresh linked proof", async () => {
+    const { repository } = await fixture();
+    let job = (await repository.createOrder(OWNER, submission())).jobs[0]!;
+    job = await uploadArtwork(repository, job);
+    job = await uploadProof(repository, job, "First artwork proof");
+    const oldProofId = job.files!.at(-1)!.id;
+    job = await repository.changeJob(CUSTOMER, job.ref, job.revision!, { kind: "approve-proof" });
+    job = await repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, { ...artworkInput(), filename: "corrected.png" });
+    expect(job.stage).toBe("prepress");
+    expect(job.proofs.at(-1)?.kind).toBe("change-asked");
+    expect(job.proofs.at(-1)?.note).toBeUndefined();
+    await expect(repository.changeJob(CUSTOMER, job.ref, job.revision!, { kind: "approve-proof" })).rejects.toMatchObject({ status: 409 });
+    await expect(repository.changeJob(STAFF, job.ref, job.revision!, { kind: "move", column: "printing" })).rejects.toMatchObject({ status: 409 });
+    expect(Array.from((await repository.readJobFile(CUSTOMER, job.ref, oldProofId)).bytes)).toEqual(Array.from(PDF));
+    job = await uploadProof(repository, job, "Corrected artwork proof");
+    const newProofId = job.files!.at(-1)!.id;
+    expect(newProofId).not.toBe(oldProofId);
+    expect(job.proofs.at(-1)?.fileId).toBe(newProofId);
+    job = await repository.changeJob(CUSTOMER, job.ref, job.revision!, { kind: "approve-proof" });
+    expect(job.proofs.at(-1)?.fileId).toBe(newProofId);
+    job = await repository.changeJob(STAFF, job.ref, job.revision!, { kind: "move", column: "printing" });
+    expect(job.stage).toBe("printing");
+  });
+
+  it("accepts only one of two simultaneous uploads based on the same revision", async () => {
+    const { repository } = await fixture();
+    const job = (await repository.createOrder(OWNER, submission())).jobs[0]!;
+    const results = await Promise.allSettled([
+      repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, { ...artworkInput(), filename: "tab-one.png" }),
+      repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, { ...artworkInput(), filename: "tab-two.png" }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+    expect(rejected.reason).toMatchObject({ code: "CONFLICT", status: 409 });
+    const saved = (await repository.snapshot(CUSTOMER)).jobs[0]!;
+    expect(saved.revision).toBe(job.revision! + 1);
+    expect(saved.files).toHaveLength(1);
+    await expect(repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, artworkInput()))
+      .rejects.toMatchObject({ code: "CONFLICT", status: 409 });
+    expect((await repository.snapshot(CUSTOMER)).jobs).toEqual([saved]);
+  });
+
+  it("rolls back a proof file when recording its sent event fails", async () => {
+    const { repository, database } = await fixture();
+    const initial = (await repository.createOrder(OWNER, submission())).jobs[0]!;
+    const job = await uploadArtwork(repository, initial);
+    await database.exec(`CREATE FUNCTION public.reject_test_proof() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.kind='sent' THEN RAISE EXCEPTION 'Injected proof-event failure'; END IF;
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER reject_test_proof BEFORE INSERT ON public.proofs FOR EACH ROW EXECUTE FUNCTION public.reject_test_proof();`);
+    await expect(uploadProof(repository, job)).rejects.toThrow("Injected proof-event failure");
+    expect((await repository.snapshot(CUSTOMER)).jobs).toEqual([job]);
+    expect((await database.query("SELECT id FROM print_shop.job_files")).rows).toHaveLength(1);
+    expect((await database.query("SELECT id FROM public.proofs")).rows).toEqual([]);
+    await database.exec("DROP TRIGGER reject_test_proof ON public.proofs; DROP FUNCTION public.reject_test_proof();");
+    const proofed = await uploadProof(repository, job);
+    expect(proofed.files).toHaveLength(2);
+    expect(proofed.proofs.at(-1)?.fileId).toBe(proofed.files!.at(-1)!.id);
+  });
+
+  it("reserves the twentieth file for a final proof and enforces the limit per job", async () => {
+    const { repository } = await fixture();
+    let job = (await repository.createOrder(OWNER, submission())).jobs[0]!;
+    for (let index = 0; index < MAX_JOB_FILES - 1; index++) {
+      job = await repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, { ...artworkInput(), filename: `version-${index}.png` });
+    }
+    expect(job.files).toHaveLength(MAX_JOB_FILES - 1);
+    await expect(uploadArtwork(repository, job)).rejects.toMatchObject({ status: 409, code: "FILE_LIMIT" });
+    expect((await repository.snapshot(CUSTOMER)).jobs).toEqual([job]);
+    job = await uploadProof(repository, job, "Final proof for the latest artwork");
+    expect(job.files).toHaveLength(MAX_JOB_FILES);
+    await expect(uploadArtwork(repository, job)).rejects.toMatchObject({ status: 409, code: "FILE_LIMIT" });
+    await expect(uploadProof(repository, job)).rejects.toMatchObject({ status: 409, code: "FILE_LIMIT" });
+    expect((await repository.snapshot(CUSTOMER)).jobs).toEqual([job]);
+    job = await repository.changeJob(CUSTOMER, job.ref, job.revision!, { kind: "approve-proof" });
+    job = await repository.changeJob(STAFF, job.ref, job.revision!, { kind: "move", column: "printing" });
+    expect(job.stage).toBe("printing");
+    const other = (await repository.createOrder(OWNER, submission("second-job-request"))).jobs[0]!;
+    expect((await uploadArtwork(repository, other)).files).toHaveLength(1);
+  });
+
+  it("accepts an exact ten-MiB file and rejects an extra byte before saving it", async () => {
+    const { repository } = await fixture();
+    let job = (await repository.createOrder(OWNER, submission())).jobs[0]!;
+    const bytes = new Uint8Array(MAX_JOB_FILE_BYTES);
+    bytes.fill(32);
+    bytes.set(PDF.subarray(0, PDF.length - 6));
+    bytes.set(Buffer.from("%%EOF\n"), bytes.length - 6);
+    const input = { kind: "artwork" as const, filename: "large.pdf", mediaType: "application/pdf", bytes };
+    const oversized = new Uint8Array(MAX_JOB_FILE_BYTES + 1);
+    oversized.set(bytes);
+    await expect(repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, { ...input, bytes: oversized }))
+      .rejects.toMatchObject({ status: 413, code: "FILE_TOO_LARGE" });
+    expect((await repository.snapshot(CUSTOMER)).jobs).toEqual([job]);
+    job = await repository.uploadJobFile(CUSTOMER, job.ref, job.revision!, input);
+    expect(job.files![0]!.size).toBe(MAX_JOB_FILE_BYTES);
+    const downloaded = await repository.readJobFile(CUSTOMER, job.ref, job.files![0]!.id);
+    expect(downloaded.bytes.length).toBe(MAX_JOB_FILE_BYTES);
+    expect(Buffer.from(downloaded.bytes).equals(Buffer.from(bytes))).toBe(true);
   });
 });

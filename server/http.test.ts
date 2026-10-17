@@ -6,7 +6,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { OrderReceipt, OrderSubmission, ShopSnapshot } from "../src/data/shopContract.ts";
+import type { Job } from "../src/lib/jobs.ts";
+import { MAX_JOB_FILE_BYTES, type JobFile, type OrderReceipt, type OrderSubmission, type ShopSnapshot } from "../src/data/shopContract.ts";
 import { openDatabase, type Database } from "./database.ts";
 import { createShopServer, hashPassword, verifyPassword, type ShopServerOptions } from "./http.ts";
 import { RepoError, ShopRepository } from "./repository.ts";
@@ -15,6 +16,11 @@ const servers: Server[] = [];
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const tokenFrom = (cookie: string) => cookie.slice(cookie.indexOf("=") + 1).split(";")[0];
 const cookieFrom = (response: Response) => response.headers.get("set-cookie")?.split(";")[0] ?? "";
+const PDF_BYTES = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n");
+const FILE: JobFile = {
+  id: "file-1", kind: "proof", filename: "Prova (1).pdf", mediaType: "application/pdf",
+  size: PDF_BYTES.length, uploadedAt: "2026-10-17T00:00:00.000Z",
+};
 
 function mockRepository() {
   const customers = new Map<string, number>();
@@ -27,6 +33,8 @@ function mockRepository() {
     })),
     createOrder: vi.fn(async (owner: string, submission: unknown) => ({ owner, submission })),
     changeJob: vi.fn(async (scope: unknown, ref: string, revision: number, command: unknown) => ({ scope, ref, revision, command })),
+    uploadJobFile: vi.fn(async (scope: unknown, ref: string, revision: number, input: unknown) => ({ scope, ref, revision, input })),
+    readJobFile: vi.fn(async (_scope: unknown, _ref: string, _fileId: string) => ({ file: FILE, bytes: PDF_BYTES })),
     findStaff: vi.fn(async (_email: string): Promise<{ id: string; passwordHash: string } | null> => null),
     createStaffSession: vi.fn(async (key: string, _staffId: string, expires: number) => { staff.set(key, expires); }),
     validStaffSession: vi.fn(async (key: string) => (staff.get(key) ?? 0) > Date.now()),
@@ -275,6 +283,170 @@ describe("staff password hashing", () => {
   });
 });
 
+describe("private job file HTTP transport", () => {
+  const uploadHeaders = (cookie: string, overrides: Record<string, string> = {}) => ({
+    cookie, "Content-Type": "application/pdf", "X-Print-Shop-Filename": encodeURIComponent("artwork.pdf"),
+    "X-Print-Shop-Revision": "0", ...overrides,
+  });
+
+  it("chooses upload scope by kind even when both customer and staff cookies exist", async () => {
+    const { base, customer, staff, repository } = await start();
+    const guest = await customer();
+    const staffToken = "t".repeat(43);
+    staff.set(hash(staffToken), Date.now() + 60_000);
+    const cookies = `${guest.cookie}; print_shop_staff=${staffToken}`;
+    const artwork = await fetch(`${base}/jobs/MP-1/files?kind=artwork`, {
+      method: "POST", headers: uploadHeaders(cookies), body: PDF_BYTES,
+    });
+    expect(artwork.status).toBe(200);
+    expect(repository.uploadJobFile).toHaveBeenLastCalledWith(
+      { side: "customer", customerHash: hash(tokenFrom(guest.cookie)) }, "MP-1", 0,
+      { kind: "artwork", filename: "artwork.pdf", mediaType: "application/pdf", bytes: PDF_BYTES },
+    );
+    const proof = await fetch(`${base}/jobs/MP-1/files?kind=proof`, {
+      method: "POST", headers: uploadHeaders(cookies, {
+        "X-Print-Shop-Filename": encodeURIComponent("proof.pdf"), "X-Print-Shop-Revision": "2",
+        "X-Print-Shop-Note": encodeURIComponent("Please review this proof."),
+      }), body: PDF_BYTES,
+    });
+    expect(proof.status).toBe(200);
+    expect(repository.uploadJobFile).toHaveBeenLastCalledWith({ side: "staff" }, "MP-1", 2, {
+      kind: "proof", filename: "proof.pdf", mediaType: "application/pdf", bytes: PDF_BYTES,
+      note: "Please review this proof.",
+    });
+    const customerCannotUploadProof = await fetch(`${base}/jobs/MP-1/files?kind=proof`, {
+      method: "POST", headers: uploadHeaders(guest.cookie), body: PDF_BYTES,
+    });
+    expect(customerCannotUploadProof.status).toBe(401);
+    const staffCannotUploadArtworkAlone = await fetch(`${base}/jobs/MP-1/files?kind=artwork`, {
+      method: "POST", headers: uploadHeaders(`print_shop_staff=${staffToken}`), body: PDF_BYTES,
+    });
+    expect(staffCannotUploadArtworkAlone.status).toBe(401);
+    expect(repository.uploadJobFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("checks authentication and the configured origin before accepting upload bytes", async () => {
+    const { base, customer, repository } = await start({ publicOrigin: "https://shop.example.com" });
+    const guest = await customer();
+    const post = (headers: Record<string, string>) => fetch(`${base}/jobs/MP-1/files?kind=artwork`, {
+      method: "POST", headers, body: PDF_BYTES,
+    });
+    expect((await post(uploadHeaders(guest.cookie))).status).toBe(403);
+    expect((await post(uploadHeaders(guest.cookie, { Origin: "https://evil.example.com" }))).status).toBe(403);
+    expect((await post(uploadHeaders(guest.cookie, {
+      Origin: "https://shop.example.com", "Sec-Fetch-Site": "cross-site",
+    }))).status).toBe(403);
+    // A missing session is rejected before media-type or byte validation.
+    expect((await post(uploadHeaders("", {
+      Origin: "https://shop.example.com", "Content-Type": "text/plain",
+    }))).status).toBe(401);
+    const unauthorizedBeforeBody = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest(`${base}/jobs/MP-1/files?kind=artwork`, {
+        method: "POST", headers: uploadHeaders("", {
+          Origin: "https://shop.example.com", "Content-Length": String(MAX_JOB_FILE_BYTES + 1), Connection: "close",
+        }),
+      }, (response) => {
+        response.resume();
+        response.on("end", () => resolve(response.statusCode ?? 0));
+      });
+      request.on("error", reject);
+      // Send headers only: authentication must fail without waiting for bytes.
+      request.end();
+    });
+    expect(unauthorizedBeforeBody).toBe(401);
+    expect(repository.uploadJobFile).not.toHaveBeenCalled();
+    expect((await post(uploadHeaders(guest.cookie, { Origin: "https://shop.example.com" }))).status).toBe(200);
+  });
+
+  it("rejects unsupported media, empty bodies, and malformed upload headers", async () => {
+    const { base, customer, repository } = await start();
+    const guest = await customer();
+    const post = (overrides: Record<string, string> = {}, body: Buffer<ArrayBuffer> = PDF_BYTES, query = "kind=artwork") =>
+      fetch(`${base}/jobs/MP-1/files?${query}`, { method: "POST", headers: uploadHeaders(guest.cookie, overrides), body });
+    for (const type of ["text/html", "image/svg+xml", "application/pdf; charset=utf-8"]) {
+      expect((await post({ "Content-Type": type })).status).toBe(415);
+    }
+    expect((await post({ "Content-Encoding": "gzip" })).status).toBe(415);
+    expect((await post({}, Buffer.alloc(0))).status).toBe(400);
+    for (const name of ["%", "%0d%0aX-Evil%3Ayes.pdf", "%00file.pdf", "..%2Ffile.pdf", "%20"]) {
+      expect((await post({ "X-Print-Shop-Filename": name })).status).toBe(400);
+    }
+    for (const revision of ["-1", "01", "1.5", "NaN", "9007199254740992", "0,1"]) {
+      expect((await post({ "X-Print-Shop-Revision": revision })).status).toBe(400);
+    }
+    expect((await post({ "X-Print-Shop-Note": "%" })).status).toBe(400);
+    expect((await post({ "X-Print-Shop-Note": encodeURIComponent("x".repeat(1001)) })).status).toBe(400);
+    expect((await post({}, PDF_BYTES, "kind=artwork&kind=proof")).status).toBe(400);
+    expect((await post({}, PDF_BYTES, "kind=unknown")).status).toBe(400);
+    const missingFilename = uploadHeaders(guest.cookie) as Record<string, string>;
+    delete missingFilename["X-Print-Shop-Filename"];
+    expect((await fetch(`${base}/jobs/MP-1/files?kind=artwork`, {
+      method: "POST", headers: missingFilename, body: PDF_BYTES,
+    })).status).toBe(400);
+    expect(repository.uploadJobFile).not.toHaveBeenCalled();
+  });
+
+  it("accepts at most 10 MiB and applies the same limit to chunked uploads", async () => {
+    const { base, customer, repository } = await start();
+    const guest = await customer();
+    const headers = uploadHeaders(guest.cookie);
+    const endpoint = `${base}/jobs/MP-1/files?kind=artwork`;
+    expect((await fetch(endpoint, { method: "POST", headers, body: Buffer.alloc(MAX_JOB_FILE_BYTES) })).status).toBe(200);
+    expect((await fetch(endpoint, { method: "POST", headers, body: Buffer.alloc(MAX_JOB_FILE_BYTES + 1) })).status).toBe(413);
+    const chunkedStatus = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest(endpoint, {
+        method: "POST", headers: { ...headers, "Transfer-Encoding": "chunked" },
+      }, (response) => {
+        response.resume();
+        response.on("end", () => resolve(response.statusCode ?? 0));
+      });
+      request.on("error", reject);
+      request.write(Buffer.alloc(MAX_JOB_FILE_BYTES));
+      request.end(Buffer.from([0]));
+    });
+    expect(chunkedStatus).toBe(413);
+    expect(repository.uploadJobFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires explicit read scope and serves private files with safe response headers", async () => {
+    const { base, customer, staff, repository } = await start();
+    const guest = await customer();
+    const staffToken = "u".repeat(43);
+    staff.set(hash(staffToken), Date.now() + 60_000);
+    const headers = { cookie: `${guest.cookie}; print_shop_staff=${staffToken}` };
+    const endpoint = `${base}/jobs/MP-1/files/file-1`;
+    expect((await fetch(endpoint, { headers })).status).toBe(400);
+    expect((await fetch(`${endpoint}?side=customer&side=staff`, { headers })).status).toBe(400);
+    expect((await fetch(`${endpoint}?side=staff`, { headers: { cookie: guest.cookie } })).status).toBe(401);
+    expect((await fetch(`${endpoint}?side=customer`)).status).toBe(401);
+    expect((await fetch(`${endpoint}?side=customer`, { headers: { cookie: `print_shop_staff=${staffToken}` } })).status).toBe(401);
+    expect(repository.readJobFile).not.toHaveBeenCalled();
+    repository.readJobFile.mockResolvedValueOnce({ file: { ...FILE, filename: "İş (1)'\".pdf" }, bytes: PDF_BYTES });
+    const proof = await fetch(`${endpoint}?side=customer`, { headers });
+    expect(proof.status).toBe(200);
+    expect(repository.readJobFile).toHaveBeenLastCalledWith(
+      { side: "customer", customerHash: hash(tokenFrom(guest.cookie)) }, "MP-1", "file-1",
+    );
+    expect(Buffer.from(await proof.arrayBuffer())).toEqual(PDF_BYTES);
+    expect(proof.headers.get("Content-Type")).toBe("application/pdf");
+    expect(proof.headers.get("Content-Length")).toBe(String(PDF_BYTES.length));
+    expect(proof.headers.get("Content-Disposition")).toBe(
+      'inline; filename="__ _1___.pdf"; filename*=UTF-8\'\'%C4%B0%C5%9F%20%281%29%27%22.pdf',
+    );
+    expect(proof.headers.get("Cache-Control")).toBe("no-store");
+    expect(proof.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(proof.headers.get("Content-Security-Policy")).toBe("sandbox; default-src 'none'");
+    expect(proof.headers.get("Cross-Origin-Resource-Policy")).toBe("same-origin");
+    expect(proof.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    const download = await fetch(`${endpoint}?side=staff&download=1`, { headers });
+    expect(download.headers.get("Content-Disposition")).toMatch(/^attachment;/);
+    expect(repository.readJobFile).toHaveBeenLastCalledWith({ side: "staff" }, "MP-1", "file-1");
+    repository.readJobFile.mockResolvedValueOnce({ file: { ...FILE, kind: "artwork" }, bytes: PDF_BYTES });
+    const original = await fetch(`${endpoint}?side=customer`, { headers });
+    expect(original.headers.get("Content-Disposition")).toMatch(/^attachment;/);
+  });
+});
+
 describe("persistent shop HTTP workflow", () => {
   it("preserves real orders and authorized sessions across a server and database restart", async () => {
     const directory = await mkdtemp(join(tmpdir(), "print-shop-http-"));
@@ -356,6 +528,50 @@ describe("persistent shop HTTP workflow", () => {
       expect(staffResponse.status).toBe(200);
       expect((await staffResponse.json() as ShopSnapshot).orders).toEqual([receipt.order]);
 
+      const jobRef = receipt.jobs[0]!.ref;
+      const bothCookies = `${customerCookie}; ${staffCookie}`;
+      const upload = (kind: "artwork" | "proof", revision: number, filename: string, bytes: Buffer<ArrayBuffer> = PDF_BYTES,
+        mediaType = "application/pdf") => fetch(`${running.base}/jobs/${jobRef}/files?kind=${kind}`, {
+        method: "POST", headers: {
+          cookie: bothCookies, "Content-Type": mediaType,
+          "X-Print-Shop-Filename": encodeURIComponent(filename), "X-Print-Shop-Revision": String(revision),
+          ...(kind === "proof" ? { "X-Print-Shop-Note": encodeURIComponent("Please approve this version.") } : {}),
+        }, body: bytes,
+      });
+      const invalidSignature = await upload("artwork", 0, "wrong.png", PDF_BYTES, "image/png");
+      expect(invalidSignature.status).toBe(400);
+      const artworkUpload = await upload("artwork", 0, "customer-artwork.pdf");
+      expect(artworkUpload.status).toBe(200);
+      const artworkJob = await artworkUpload.json() as Job;
+      expect(artworkJob.revision).toBe(1);
+      const artworkFile = artworkJob.files!.find((file) => file.kind === "artwork")!;
+      const proofUpload = await upload("proof", 1, "customer-proof.pdf");
+      expect(proofUpload.status).toBe(200);
+      const proofJob = await proofUpload.json() as Job;
+      expect(proofJob.revision).toBe(2);
+      const proofFile = proofJob.files!.find((file) => file.kind === "proof")!;
+      expect(proofJob.proofs.at(-1)?.fileId).toBe(proofFile.id);
+      const proofDownload = await fetch(`${running.base}/jobs/${jobRef}/files/${proofFile.id}?side=customer`, {
+        headers: { cookie: bothCookies },
+      });
+      expect(proofDownload.status).toBe(200);
+      expect(proofDownload.headers.get("Content-Disposition")).toMatch(/^inline;/);
+      expect(Buffer.from(await proofDownload.arrayBuffer())).toEqual(PDF_BYTES);
+      const originalDownload = await fetch(`${running.base}/jobs/${jobRef}/files/${artworkFile.id}?side=staff`, {
+        headers: { cookie: bothCookies },
+      });
+      expect(originalDownload.status).toBe(200);
+      expect(originalDownload.headers.get("Content-Disposition")).toMatch(/^attachment;/);
+      expect(Buffer.from(await originalDownload.arrayBuffer())).toEqual(PDF_BYTES);
+      const approvedResponse = await fetch(`${running.base}/jobs/${jobRef}`, {
+        method: "POST", headers: { cookie: bothCookies, "Content-Type": "application/json" },
+        body: JSON.stringify({ revision: 2, command: { kind: "approve-proof" } }),
+      });
+      expect(approvedResponse.status).toBe(200);
+      const approvedJob = await approvedResponse.json() as Job;
+      expect(approvedJob.stage).toBe("approved");
+      expect(approvedJob.proofs.at(-1)?.fileId).toBe(proofFile.id);
+
       const otherGuest = await fetch(`${running.base}/bootstrap?side=customer`);
       const otherCookie = cookieFrom(otherGuest);
       const otherSnapshot = await otherGuest.json() as ShopSnapshot;
@@ -371,6 +587,14 @@ describe("persistent shop HTTP workflow", () => {
         body: JSON.stringify({ revision: 0, command: { kind: "approve-proof" } }),
       });
       expect(staffCannotApproveForAnotherCustomer.status).toBe(403);
+      const otherFileRead = await fetch(`${running.base}/jobs/${jobRef}/files/${proofFile.id}?side=customer`, {
+        headers: { cookie: `${otherCookie}; ${staffCookie}` },
+      });
+      expect(otherFileRead.status).toBe(403);
+      const mismatchedJobRead = await fetch(`${running.base}/jobs/${receipt.jobs[1]!.ref}/files/${proofFile.id}?side=customer`, {
+        headers: { cookie: customerCookie },
+      });
+      expect(mismatchedJobRead.status).toBe(404);
 
       const invalid = structuredClone(submission);
       invalid.requestKey = "http-invalid-second-line";
@@ -388,7 +612,17 @@ describe("persistent shop HTTP workflow", () => {
       const restoredSnapshot = await restoredCustomer.json() as ShopSnapshot;
       expect(restoredSnapshot.orders).toEqual([receipt.order]);
       expect(restoredSnapshot.jobs).toHaveLength(2);
-      expect(restoredSnapshot.jobs).toEqual(expect.arrayContaining(receipt.jobs));
+      expect(restoredSnapshot.jobs).toEqual(expect.arrayContaining([approvedJob, receipt.jobs[1]!]));
+      const persistedProof = await fetch(`${restarted.base}/jobs/${jobRef}/files/${proofFile.id}?side=customer`, {
+        headers: { cookie: customerCookie },
+      });
+      expect(persistedProof.status).toBe(200);
+      expect(Buffer.from(await persistedProof.arrayBuffer())).toEqual(PDF_BYTES);
+      const persistedArtwork = await fetch(`${restarted.base}/jobs/${jobRef}/files/${artworkFile.id}?side=staff`, {
+        headers: { cookie: staffCookie },
+      });
+      expect(persistedArtwork.status).toBe(200);
+      expect(Buffer.from(await persistedArtwork.arrayBuffer())).toEqual(PDF_BYTES);
       const restoredStaff = await fetch(`${restarted.base}/bootstrap?side=staff`, { headers: { cookie: staffCookie } });
       expect(restoredStaff.status).toBe(200);
       expect((await restoredStaff.json() as ShopSnapshot).orders).toEqual([receipt.order]);

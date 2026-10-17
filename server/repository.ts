@@ -4,8 +4,12 @@ import { PRODUCTS, PRODUCT_BY_KEY, incompatibleReason } from '../src/lib/catalog
 import { MATERIALS, DELIVERY_BY_KEY, TAX_RATE, LARGE_FORMAT_MAX_QUANTITY } from '../src/lib/rates.ts';
 import { addWorkingDays, priceQuote, promiseFor } from '../src/lib/quote.ts';
 import type { JobCommand, OrderReceipt, OrderSubmission, ShopSnapshot } from '../src/data/shopContract.ts';
+import { MAX_JOB_FILES } from '../src/data/shopContract.ts';
+import type { JobFile } from '../src/data/shopContract.ts';
 import type { BasketLine, PlacedOrder } from '../src/state/store.ts';
 import type { Database } from './database.ts';
+import { FileValidationError, validateJobFile } from './fileValidation.ts';
+import type { JobFileInput } from './fileValidation.ts';
 
 type Job = ShopSnapshot['jobs'][number];
 type Works = ShopSnapshot['works'];
@@ -103,15 +107,19 @@ interface JobRow {
   quantity: number; trim_width_mm: string | number; trim_height_mm: string | number;
   sides: 1 | 2; finish_key: string; packaging_key: string; stage: Job['stage']; promised_date: string;
   express: boolean; spoiled_sheets: number; revision: number; owner_session_hash: string | null;
-  proofs: { kind: Job['proofs'][number]['kind']; at: string; note: string | null }[];
+  proofs: { kind: Job['proofs'][number]['kind']; at: string; note: string | null; fileId: string | null }[];
+  files: (JobFile & { artworkId: string | null })[];
   dispatch: { kind: 'collected' | 'carrier'; at: string; tracking: string | null } | null;
 }
 
 const JOB_SELECT = `SELECT j.*, p.key AS product_key, m.key AS material_key,
   COALESCE(o.snapshot->'customer'->>'name', c.name) AS customer_name,
   to_char(j.promised_for, 'YYYY-MM-DD') AS promised_date, o.owner_session_hash,
-  COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', pr.kind, 'at', to_char(pr.at, 'YYYY-MM-DD'), 'note', pr.note) ORDER BY pr.id)
+  COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', pr.kind, 'at', to_char(pr.at, 'YYYY-MM-DD'), 'note', pr.note, 'fileId', pr.file_id) ORDER BY pr.id)
     FROM public.proofs pr WHERE pr.job_id=j.id), '[]'::jsonb) AS proofs,
+  COALESCE((SELECT jsonb_agg(jsonb_build_object('id', f.id, 'kind', f.kind, 'filename', f.filename,
+    'mediaType', f.media_type, 'size', f.size, 'uploadedAt', f.uploaded_at, 'artworkId', f.artwork_id) ORDER BY f.version)
+    FROM print_shop.job_files f WHERE f.job_id=j.id), '[]'::jsonb) AS files,
   (SELECT jsonb_build_object('kind', d.kind, 'at', d.at, 'tracking', d.tracking) FROM public.dispatches d WHERE d.job_id=j.id) AS dispatch
   FROM public.jobs j JOIN public.products p ON p.id=j.product_id
   JOIN public.materials m ON m.id=j.material_id JOIN public.customers c ON c.id=j.customer_id
@@ -123,10 +131,21 @@ function jobFrom(row: JobRow): Job {
     quantity: row.quantity, trimWidthMm: Number(row.trim_width_mm), trimHeightMm: Number(row.trim_height_mm),
     sides: row.sides, finishKey: row.finish_key, packagingKey: row.packaging_key,
     stage: row.stage, promisedFor: row.promised_date, express: row.express,
-    proofs: row.proofs.map((proof) => ({ kind: proof.kind, at: proof.at, ...(proof.note === null ? {} : { note: proof.note }) })),
+    proofs: row.proofs.map((proof) => ({ kind: proof.kind, at: proof.at, ...(proof.note === null ? {} : { note: proof.note }), ...(proof.fileId === null ? {} : { fileId: proof.fileId }) })),
+    files: row.files.map(fileMetadata),
     spoiledSheets: row.spoiled_sheets, revision: row.revision,
     ...(row.dispatch === null ? {} : { dispatch: { kind: row.dispatch.kind, at: new Date(row.dispatch.at).toISOString(), ...(row.dispatch.tracking === null ? {} : { tracking: row.dispatch.tracking }) } }),
   };
+}
+
+function fileMetadata(file: JobFile): JobFile {
+  return { id: file.id, kind: file.kind, filename: file.filename, mediaType: file.mediaType, size: file.size, uploadedAt: new Date(file.uploadedAt).toISOString() };
+}
+
+function currentProof(row: JobRow): boolean {
+  const artwork = row.files.filter((file) => file.kind === 'artwork').at(-1);
+  const proof = row.files.filter((file) => file.kind === 'proof').at(-1);
+  return !!artwork && !!proof && proof.artworkId === artwork.id && row.proofs.at(-1)?.fileId === proof.id;
 }
 
 export class ShopRepository {
@@ -160,6 +179,7 @@ export class ShopRepository {
         if (missing.length) fail('SCHEMA_REQUIRED', 503, `The existing database is missing required Print Shop tables: ${missing.join(', ')}.`);
       }
       await db.exec(await readFile(new URL('../db/migrations/001-orders.sql', import.meta.url), 'utf8'));
+      await db.exec(await readFile(new URL('../db/migrations/002-job-files.sql', import.meta.url), 'utf8'));
       for (const product of PRODUCTS) await db.query('INSERT INTO public.products(key,name,family,from_quantity,sides_choice) VALUES($1,$2,$3,$4,$5) ON CONFLICT(key) DO NOTHING', [product.key, product.key, product.family, product.fromQuantity, product.sidesChoice]);
       for (const material of MATERIALS) await db.query('INSERT INTO public.materials(key,name,kind,gsm,sheet_cost,on_hand,reorder_at) VALUES($1,$2,$3,$4,$5,0,0) ON CONFLICT(key) DO NOTHING', [material.key, material.key, material.kind, material.gsm || null, material.rateCents / 100]);
     });
@@ -247,6 +267,53 @@ export class ShopRepository {
     };
   }
 
+  async uploadJobFile(scope: Scope, ref: string, revision: number, input: JobFileInput): Promise<Job> {
+    if (!Number.isSafeInteger(revision) || revision < 0) fail('INVALID_REQUEST', 400, 'A job revision is required.');
+    if (input?.kind === 'artwork' ? scope.side !== 'customer' : input?.kind === 'proof' ? scope.side !== 'staff' : false) fail('FORBIDDEN', 403, 'This session cannot upload this file kind.');
+    let file: ReturnType<typeof validateJobFile>;
+    try { file = validateJobFile(input); }
+    catch (error) {
+      if (error instanceof FileValidationError) throw new RepoError(error.code, error.status, error.message);
+      throw error;
+    }
+    return this.db.transaction(async (db) => {
+      if (scope.side === 'customer') await this.requireCustomer(db, scope.customerHash);
+      const row = (await db.query<JobRow>(`${JOB_SELECT} WHERE j.ref=$1 FOR UPDATE OF j`, [ref])).rows[0];
+      if (!row) return fail('NOT_FOUND', 404, 'Job not found.');
+      if (scope.side === 'customer' && row.owner_session_hash !== scope.customerHash) fail('FORBIDDEN', 403, 'This job belongs to another session.');
+      if (revision !== row.revision) fail('CONFLICT', 409, 'This job has changed. Reload before trying again.');
+      if (!['ordered', 'prepress', 'proofed', 'approved'].includes(row.stage)) fail('CONFLICT', 409, 'Files can only be uploaded during prepress.');
+      if (row.files.length >= MAX_JOB_FILES) fail('FILE_LIMIT', 409, 'This job already has 20 file versions.');
+      if (file.kind === 'artwork' && row.files.length >= MAX_JOB_FILES - 1) fail('FILE_LIMIT', 409, 'Keep the final file version available for the required proof.');
+      const artwork = row.files.filter((entry) => entry.kind === 'artwork').at(-1);
+      if (file.kind === 'proof' && !artwork) fail('ARTWORK_REQUIRED', 409, 'Upload the artwork before sending a proof.');
+      const id = randomUUID();
+      const uploadedAt = this.clock().toISOString();
+      await db.query(`INSERT INTO print_shop.job_files(id,job_id,kind,filename,media_type,size,bytes,uploaded_at,artwork_id)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [id, row.id, file.kind, file.filename, file.mediaType, file.bytes.byteLength, file.bytes, uploadedAt, file.kind === 'proof' ? artwork!.id : null]);
+      if (file.kind === 'proof') {
+        await db.query("INSERT INTO public.proofs(job_id,kind,note,at,file_id) VALUES($1,'sent',$2,$3,$4)", [row.id, file.note || null, this.now().iso, id]);
+      } else if (row.proofs.length) {
+        // Keep the earlier evidence; the new source file requires a fresh proof.
+        await db.query("INSERT INTO public.proofs(job_id,kind,note,at,file_id) VALUES($1,'change-asked',NULL,$2,$3)", [row.id, this.now().iso, row.proofs.at(-1)!.fileId]);
+      }
+      await db.query('UPDATE public.jobs SET stage=$2,revision=revision+1,updated_at=$3 WHERE id=$1', [row.id, file.kind === 'proof' ? 'proofed' : 'prepress', uploadedAt]);
+      return jobFrom((await db.query<JobRow>(`${JOB_SELECT} WHERE j.id=$1`, [row.id])).rows[0]!);
+    });
+  }
+
+  async readJobFile(scope: Scope, ref: string, fileId: string): Promise<{ file: JobFile; bytes: Uint8Array }> {
+    if (scope.side === 'customer') await this.requireCustomer(this.db, scope.customerHash);
+    const row = (await this.db.query<JobRow>(`${JOB_SELECT} WHERE j.ref=$1`, [ref])).rows[0];
+    if (!row) return fail('NOT_FOUND', 404, 'Job not found.');
+    if (scope.side === 'customer' && row.owner_session_hash !== scope.customerHash) fail('FORBIDDEN', 403, 'This job belongs to another session.');
+    const file = row.files.find((entry) => entry.id === fileId);
+    if (!file) return fail('NOT_FOUND', 404, 'File not found.');
+    const saved = (await this.db.query<{ bytes: Uint8Array }>('SELECT bytes FROM print_shop.job_files WHERE id=$1 AND job_id=$2', [fileId, row.id])).rows[0];
+    if (!saved) return fail('NOT_FOUND', 404, 'File not found.');
+    return { file: fileMetadata(file), bytes: new Uint8Array(saved.bytes) };
+  }
+
   async changeJob(scope: Scope, ref: string, revision: number, command: JobCommand): Promise<Job> {
     if (!Number.isSafeInteger(revision) || revision < 0) fail('INVALID_REQUEST', 400, 'A job revision is required.');
     const raw = object(command, ['kind', 'column', 'note', 'sheets']);
@@ -266,24 +333,21 @@ export class ShopRepository {
       let promisedFor = row.promised_date;
       const today = this.now().iso;
       switch (raw.kind) {
-        case 'send-proof': {
+        case 'send-proof':
           object(command, ['kind', 'note']);
-          if (!prepress) fail('CONFLICT', 409, 'Proofs can only be sent during prepress.');
-          const note = text(raw.note, 4000, false);
-          await db.query("INSERT INTO public.proofs(job_id,kind,note,at) VALUES($1,'sent',$2,$3)", [row.id, note || null, today]);
-          stage = 'proofed';
-          break;
-        }
+          return fail('PROOF_FILE_REQUIRED', 409, 'Upload the proof file to send a proof.');
         case 'approve-proof':
           object(command, ['kind']);
           if (!prepress || latest?.kind !== 'sent') fail('PROOF_REQUIRED', 409, 'The latest proof must be sent before approval.');
-          await db.query("INSERT INTO public.proofs(job_id,kind,at) VALUES($1,'approved',$2)", [row.id, today]);
+          if (!currentProof(row)) fail('PROOF_FILE_REQUIRED', 409, 'Approval requires a proof of the current artwork.');
+          await db.query("INSERT INTO public.proofs(job_id,kind,at,file_id) VALUES($1,'approved',$2,$3)", [row.id, today, latest!.fileId]);
           stage = 'approved';
           break;
         case 'ask-change':
           object(command, ['kind', 'note']);
           if (!prepress || (latest?.kind !== 'sent' && latest?.kind !== 'approved')) fail('PROOF_REQUIRED', 409, 'No current proof is available.');
-          await db.query("INSERT INTO public.proofs(job_id,kind,note,at) VALUES($1,'change-asked',$2,$3)", [row.id, text(raw.note, 4000), today]);
+          if (!currentProof(row)) fail('PROOF_FILE_REQUIRED', 409, 'A change request requires a proof of the current artwork.');
+          await db.query("INSERT INTO public.proofs(job_id,kind,note,at,file_id) VALUES($1,'change-asked',$2,$3,$4)", [row.id, text(raw.note, 4000), today, latest!.fileId]);
           stage = 'prepress';
           promisedFor = addWorkingDays(promisedFor, 1);
           break;
@@ -291,8 +355,10 @@ export class ShopRepository {
           object(command, ['kind', 'column']);
           if (!['prepress', 'printing', 'finishing', 'ready'].includes(raw.column as string)) fail('INVALID_REQUEST', 400, 'Unknown board column.');
           if (['quoted', 'collected', 'dispatched'].includes(row.stage)) fail('CONFLICT', 409, 'This job is not open for production.');
+          if (raw.column !== 'prepress' && !row.files.some((file) => file.kind === 'artwork')) fail('ARTWORK_REQUIRED', 409, 'Upload the artwork before production.');
           if (raw.column !== 'prepress' && latest?.kind !== 'approved') fail('PROOF_REQUIRED', 409, 'Approve the latest proof before production.');
-          stage = raw.column === 'prepress' ? (latest?.kind === 'approved' ? 'approved' : 'prepress') : raw.column as Job['stage'];
+          if (raw.column !== 'prepress' && !currentProof(row)) fail('PROOF_FILE_REQUIRED', 409, 'Production requires an approved proof of the current artwork.');
+          stage = raw.column === 'prepress' ? (latest?.kind === 'approved' && currentProof(row) ? 'approved' : 'prepress') : raw.column as Job['stage'];
           break;
         }
         case 'spoilage': {

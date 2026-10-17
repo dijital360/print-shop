@@ -1,6 +1,6 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { JobCommand, OrderSubmission } from "../src/data/shopContract.ts";
+import { MAX_JOB_FILE_BYTES, type JobCommand, type JobFile, type OrderSubmission } from "../src/data/shopContract.ts";
 import { RepoError, type ShopRepository } from "./repository.ts";
 
 const CUSTOMER_COOKIE = "print_shop_customer";
@@ -15,6 +15,7 @@ type Repository = Pick<ShopRepository,
   | "ensureCustomerSession" | "validCustomerSession" | "createOrder" | "snapshot"
   | "changeJob" | "findStaff" | "createStaffSession" | "validStaffSession"
   | "deleteStaffSession"
+  | "uploadJobFile" | "readJobFile"
 >;
 
 export interface ShopServerOptions {
@@ -128,6 +129,85 @@ function readJson(request: IncomingMessage): Promise<unknown> {
   });
 }
 
+function decodeHeader(request: IncomingMessage, name: string, maximum: number, required = true): string | undefined {
+  const raw = request.headers[name];
+  if (typeof raw !== "string") {
+    if (!required && raw === undefined) return undefined;
+    throw new HttpError("INVALID_REQUEST", 400);
+  }
+  let decoded: string;
+  try { decoded = decodeURIComponent(raw); }
+  catch { throw new HttpError("INVALID_REQUEST", 400); }
+  if (decoded.length > maximum || (required && !decoded.trim())
+    || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(decoded)) {
+    throw new HttpError("INVALID_REQUEST", 400);
+  }
+  return decoded;
+}
+
+function readUpload(request: IncomingMessage): Promise<Buffer> {
+  const declaredSize = request.headers["content-length"];
+  if (declaredSize !== undefined && Number(declaredSize) > MAX_JOB_FILE_BYTES) {
+    request.resume();
+    throw new HttpError("PAYLOAD_TOO_LARGE", 413);
+  }
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let finished = false;
+    request.on("data", (chunk: Buffer) => {
+      if (finished) return;
+      size += chunk.length;
+      if (size > MAX_JOB_FILE_BYTES) {
+        finished = true;
+        chunks.length = 0;
+        reject(new HttpError("PAYLOAD_TOO_LARGE", 413));
+      } else chunks.push(chunk);
+    });
+    request.on("end", () => {
+      if (finished) return;
+      finished = true;
+      if (size === 0) reject(new HttpError("INVALID_REQUEST", 400));
+      else resolve(Buffer.concat(chunks, size));
+    });
+    const interrupted = () => {
+      if (finished) return;
+      finished = true;
+      chunks.length = 0;
+      reject(new HttpError("INVALID_REQUEST", 400));
+    };
+    request.on("error", interrupted);
+    request.on("aborted", interrupted);
+  });
+}
+
+function decodePathSegment(value: string): string {
+  try { return decodeURIComponent(value); }
+  catch { throw new HttpError("INVALID_REQUEST", 400); }
+}
+
+function sendFile(response: ServerResponse, file: JobFile, bytes: Uint8Array, download: boolean): void {
+  const mediaTypes = ["application/pdf", "image/png", "image/jpeg"];
+  if (!mediaTypes.includes(file.mediaType) || /[\u0000-\u001f\u007f]/.test(file.filename)) {
+    throw new HttpError("UNAVAILABLE", 500);
+  }
+  const fallback = file.filename.replace(/[^A-Za-z0-9._ -]/g, "_") || "download";
+  const encoded = encodeURIComponent(file.filename).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  const disposition = download || file.kind === "artwork" ? "attachment" : "inline";
+  response.writeHead(200, {
+    "Content-Type": file.mediaType,
+    "Content-Length": bytes.byteLength,
+    "Content-Disposition": `${disposition}; filename="${fallback}"; filename*=UTF-8''${encoded}`,
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox; default-src 'none'",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Referrer-Policy": "no-referrer",
+  });
+  response.end(bytes);
+}
+
 function checkWriteOrigin(request: IncomingMessage, publicOrigin?: string): void {
   if (request.headers["sec-fetch-site"] === "cross-site") {
     throw new HttpError("FORBIDDEN", 403);
@@ -149,7 +229,7 @@ function checkWriteOrigin(request: IncomingMessage, publicOrigin?: string): void
       throw new HttpError("FORBIDDEN", 403);
     }
   }
-  // Origin-less JSON requests are useful for local administration and tests.
+  // Origin-less requests are useful for local administration and tests.
   // Public deployments must use the configured, exact browser origin.
   let localHost = false;
   try {
@@ -232,7 +312,52 @@ export function createShopServer(repository: Repository, options: ShopServerOpti
         }
         return;
       }
+      const fileReadMatch = /^\/api\/shop\/jobs\/([^/]+)\/files\/([^/]+)$/.exec(path);
+      if (method === "GET" && fileReadMatch) {
+        const side = url.searchParams.get("side");
+        if (url.searchParams.getAll("side").length !== 1 || (side !== "staff" && side !== "customer")) {
+          throw new HttpError("INVALID_REQUEST", 400);
+        }
+        let scope: { side: "staff" | "customer"; customerHash?: string };
+        if (side === "staff") {
+          if (!await staffHash(request)) throw new HttpError("AUTH_REQUIRED", 401);
+          scope = { side: "staff" };
+        } else scope = { side: "customer", customerHash: await customerHash(request) };
+        const result = await repository.readJobFile(scope,
+          decodePathSegment(fileReadMatch[1]), decodePathSegment(fileReadMatch[2]));
+        sendFile(response, result.file, result.bytes, url.searchParams.get("download") === "1");
+        return;
+      }
       if (method === "POST" || method === "DELETE") checkWriteOrigin(request, publicOrigin);
+      const fileUploadMatch = /^\/api\/shop\/jobs\/([^/]+)\/files$/.exec(path);
+      if (method === "POST" && fileUploadMatch) {
+        const kind = url.searchParams.get("kind");
+        if (url.searchParams.getAll("kind").length !== 1 || (kind !== "artwork" && kind !== "proof")) {
+          throw new HttpError("INVALID_REQUEST", 400);
+        }
+        let scope: { side: "staff" | "customer"; customerHash?: string };
+        if (kind === "proof") {
+          if (!await staffHash(request)) throw new HttpError("AUTH_REQUIRED", 401);
+          scope = { side: "staff" };
+        } else scope = { side: "customer", customerHash: await customerHash(request) };
+        const mediaType = request.headers["content-type"]?.toLowerCase();
+        if (!mediaType || !["application/pdf", "image/png", "image/jpeg"].includes(mediaType)
+          || (request.headers["content-encoding"] !== undefined && request.headers["content-encoding"] !== "identity")) {
+          throw new HttpError("UNSUPPORTED_MEDIA_TYPE", 415);
+        }
+        const revisionHeader = request.headers["x-print-shop-revision"];
+        if (typeof revisionHeader !== "string" || !/^(0|[1-9]\d*)$/.test(revisionHeader)
+          || !Number.isSafeInteger(Number(revisionHeader))) throw new HttpError("INVALID_REQUEST", 400);
+        const filename = decodeHeader(request, "x-print-shop-filename", 255)!;
+        if (/[\r\n\t/\\]/.test(filename)) throw new HttpError("INVALID_REQUEST", 400);
+        const note = decodeHeader(request, "x-print-shop-note", 1000, false);
+        const ref = decodePathSegment(fileUploadMatch[1]);
+        const bytes = await readUpload(request);
+        send(response, 200, await repository.uploadJobFile(scope, ref, Number(revisionHeader), {
+          kind, filename, mediaType, bytes, ...(note === undefined ? {} : { note }),
+        }));
+        return;
+      }
       if (method === "POST" && path === "/api/shop/staff/session") {
         checkLoginLimit(request);
         const body = await readJson(request) as { email?: unknown; password?: unknown };
@@ -292,7 +417,7 @@ export function createShopServer(repository: Repository, options: ShopServerOpti
       }
     });
   });
-  server.requestTimeout = 30_000;
+  server.requestTimeout = 90_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 5_000;
   server.maxHeadersCount = 64;
