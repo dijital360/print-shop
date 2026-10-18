@@ -93,6 +93,7 @@ export function Reorder() {
   const t = useT();
   const pastJobs = useStore((s) => s.pastJobs);
   const startConfigure = useStore((s) => s.startConfigure);
+  const go = useStore((s) => s.go);
 
   return (
     <section className="mp-screen mp-narrow">
@@ -102,6 +103,16 @@ export function Reorder() {
       <p className="mp-lede">{t("cust.reorder.lede")}</p>
       <div className="mp-stack" style={{ gap: 12 }}>
         {pastJobs.map((job) => {
+          if (job.catalogueLine) return (
+            <div key={job.ref} className="mp-panel mp-panel-pad mp-row" lang="tr">
+              <div style={{ flex: 1 }}>
+                <strong>{job.catalogueLine.productName}</strong>
+                <div>{job.ref} · {num(job.quantity)} · {mm(job.trimWidthMm, job.trimHeightMm)}</div>
+                <p>Yeni sipariş için güncel ürün ve fiyatları kullanın.</p>
+              </div>
+              <button type="button" className="mp-button mp-btn" onClick={() => go("products")}>Ürünlere dön</button>
+            </div>
+          );
           const product = PRODUCT_BY_KEY[job.productKey as ProductKey];
           const quote = priceQuote({
             product: job.productKey as never,
@@ -375,14 +386,14 @@ export function Proofs() {
               <div key={job.ref} className="mp-panel mp-panel-pad">
                 <div className="mp-row" style={{ flexWrap: "nowrap", alignItems: "flex-start" }}>
                   <Tile
-                    family={PRODUCT_BY_KEY[job.productKey as ProductKey].family}
+                    family={PRODUCT_BY_KEY[job.productKey as ProductKey]?.family ?? (job.catalogueLine?.calculationMode === "unit" ? "paper" : "large")}
                     icon={<Check size={21} aria-hidden="true" />}
                     style={{ inlineSize: 42, blockSize: 42, borderRadius: 11, flex: "0 0 auto" }}
                   />
                   <div style={{ flex: 1, minInlineSize: 0 }}>
                     <div className="mp-row" style={{ gap: 9, alignItems: "baseline" }}>
                       <span style={{ fontSize: 15, fontWeight: 800 }}>
-                        {t(`data.product.${job.productKey}` as never)}
+                        {job.catalogueLine?.productName ?? t(`data.product.${job.productKey}` as never)}
                       </span>
                       <Mono style={{ fontSize: 11.5, color: "var(--fg-subtle)" }}>{job.ref}</Mono>
                     </div>

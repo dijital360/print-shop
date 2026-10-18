@@ -1,6 +1,7 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { MAX_JOB_FILE_BYTES, type JobCommand, type JobFile, type OrderSubmission } from "../src/data/shopContract.ts";
+import type { CatalogueOrderSubmission, CatalogueProductDraft, CatalogueSelection } from "../src/lib/commerce.ts";
 import { RepoError, type ShopRepository } from "./repository.ts";
 
 const CUSTOMER_COOKIE = "print_shop_customer";
@@ -16,6 +17,7 @@ type Repository = Pick<ShopRepository,
   | "changeJob" | "findStaff" | "createStaffSession" | "validStaffSession"
   | "deleteStaffSession"
   | "uploadJobFile" | "readJobFile"
+  | "listProducts" | "createProduct" | "updateProduct" | "quoteCatalogue" | "createCatalogueOrder"
 >;
 
 export interface ShopServerOptions {
@@ -312,6 +314,19 @@ export function createShopServer(repository: Repository, options: ShopServerOpti
         }
         return;
       }
+      if (method === "GET" && path === "/api/shop/catalogue") {
+        const side = url.searchParams.get("side");
+        if (url.searchParams.getAll("side").length !== 1 || (side !== "customer" && side !== "staff")) {
+          throw new HttpError("INVALID_REQUEST", 400);
+        }
+        let scope: { side: "customer" | "staff"; customerHash?: string };
+        if (side === "staff") {
+          if (!await staffHash(request)) throw new HttpError("AUTH_REQUIRED", 401);
+          scope = { side: "staff" };
+        } else scope = { side: "customer", customerHash: await customerHash(request) };
+        send(response, 200, { products: await repository.listProducts(scope) });
+        return;
+      }
       const fileReadMatch = /^\/api\/shop\/jobs\/([^/]+)\/files\/([^/]+)$/.exec(path);
       if (method === "GET" && fileReadMatch) {
         const side = url.searchParams.get("side");
@@ -328,7 +343,42 @@ export function createShopServer(repository: Repository, options: ShopServerOpti
         sendFile(response, result.file, result.bytes, url.searchParams.get("download") === "1");
         return;
       }
-      if (method === "POST" || method === "DELETE") checkWriteOrigin(request, publicOrigin);
+      if (method === "POST" || method === "PUT" || method === "DELETE") checkWriteOrigin(request, publicOrigin);
+      if (method === "POST" && path === "/api/shop/catalogue") {
+        if (!await staffHash(request)) throw new HttpError("AUTH_REQUIRED", 401);
+        send(response, 201, await repository.createProduct(await readJson(request) as CatalogueProductDraft));
+        return;
+      }
+      const productMatch = /^\/api\/shop\/catalogue\/([^/]+)$/.exec(path);
+      if (method === "PUT" && productMatch) {
+        if (!await staffHash(request)) throw new HttpError("AUTH_REQUIRED", 401);
+        const body = await readJson(request) as { revision?: unknown; product?: unknown };
+        if (!body || typeof body !== "object" || Array.isArray(body)
+          || Object.keys(body).some((key) => key !== "revision" && key !== "product")
+          || !Number.isSafeInteger(body.revision) || (body.revision as number) < 0
+          || !body.product || typeof body.product !== "object" || Array.isArray(body.product)) {
+          throw new HttpError("INVALID_REQUEST", 400);
+        }
+        send(response, 200, await repository.updateProduct(decodePathSegment(productMatch[1]),
+          body.revision as number, body.product as CatalogueProductDraft));
+        return;
+      }
+      if (method === "POST" && path === "/api/shop/catalogue/quote") {
+        const owner = await customerHash(request);
+        const body = await readJson(request) as { lines?: unknown };
+        if (!body || typeof body !== "object" || Array.isArray(body)
+          || Object.keys(body).some((key) => key !== "lines") || !Array.isArray(body.lines) || body.lines.length === 0) {
+          throw new HttpError("INVALID_REQUEST", 400);
+        }
+        send(response, 200, await repository.quoteCatalogue(owner, body.lines as CatalogueSelection[]));
+        return;
+      }
+      if (method === "POST" && path === "/api/shop/catalogue/orders") {
+        const owner = await customerHash(request);
+        const body = await readJson(request) as CatalogueOrderSubmission;
+        send(response, 201, await repository.createCatalogueOrder(owner, body));
+        return;
+      }
       const fileUploadMatch = /^\/api\/shop\/jobs\/([^/]+)\/files$/.exec(path);
       if (method === "POST" && fileUploadMatch) {
         const kind = url.searchParams.get("kind");

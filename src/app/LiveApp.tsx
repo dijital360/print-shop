@@ -2,9 +2,11 @@ import { useId, useState, type FormEvent } from "react";
 
 import { getShopGateway } from "../data/shopGateway.ts";
 import type { ShopSide } from "../data/shopContract.ts";
+import type { CatalogueReceipt } from "../lib/commerce.ts";
 import { useI18n } from "../i18n/index.tsx";
 import { useStore } from "../state/store.ts";
 import App from "./App.tsx";
+import { CatalogueManager, CatalogueOrderHistory, CatalogueStorefront } from "../screens/Commerce.tsx";
 
 /** The live entry point receives an already authorized, session-scoped snapshot. */
 export default function LiveApp({ side, authenticated }: { side: ShopSide; authenticated: boolean }) {
@@ -12,8 +14,53 @@ export default function LiveApp({ side, authenticated }: { side: ShopSide; authe
   const [historyOpen, setHistoryOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [logoutFailed, setLogoutFailed] = useState(false);
+  const [catalogueOpen, setCatalogueOpen] = useState(() => window.location.pathname.startsWith("/staff/catalogue"));
+  const [following, setFollowing] = useState(false);
+  const [followFailed, setFollowFailed] = useState(false);
+  const view = useStore((state) => state.view);
+  const legacyOrders = useStore((state) => state.orders);
+  const hasCatalogue = getShopGateway()?.listCatalogue !== undefined;
 
   if (side === "staff" && !authenticated) return <StaffLogin />;
+
+  async function refreshSnapshot() {
+    const gateway = getShopGateway();
+    if (!gateway) throw new Error("Shop gateway is unavailable");
+    const snapshot = await gateway.bootstrap(side);
+    useStore.setState({ jobs: snapshot.jobs, pastJobs: snapshot.pastJobs, orders: snapshot.orders,
+      catalogueOrders: snapshot.catalogueOrders ?? [], stock: snapshot.stock, artwork: snapshot.artwork, now: snapshot.now });
+  }
+
+  async function acknowledgeOrder(receipt: CatalogueReceipt) {
+    useStore.setState((state) => ({
+      catalogueOrders: [...state.catalogueOrders.filter((order) => order.ref !== receipt.order.ref), receipt.order],
+      jobs: [...state.jobs.filter((job) => !receipt.jobs.some((saved) => saved.ref === job.ref)), ...receipt.jobs],
+    }));
+    // The acknowledged receipt remains usable even if a subsequent refresh fails.
+    await refreshSnapshot();
+  }
+
+  async function follow(ref: string, email: string) {
+    if (following) return;
+    setFollowing(true);
+    setFollowFailed(false);
+    try {
+      try { await refreshSnapshot(); }
+      catch {
+        const current = useStore.getState();
+        const knownOrder = [...current.orders, ...current.catalogueOrders].some((order) =>
+          order.customer.email.toLowerCase() === email.toLowerCase() && order.lines.some((line) => line.jobRef === ref));
+        if (!knownOrder || ![...current.jobs, ...current.pastJobs].some((job) => job.ref === ref)) throw new Error("UNAVAILABLE");
+      }
+      const store = useStore.getState();
+      store.setLookup({ ref, email });
+      store.doLookup();
+      if (useStore.getState().lookupResult?.kind !== "job") throw new Error("UNAVAILABLE");
+      store.go("order");
+      setHistoryOpen(false);
+    } catch { setFollowFailed(true); }
+    finally { setFollowing(false); }
+  }
 
   async function signOut() {
     if (signingOut) return;
@@ -47,13 +94,30 @@ export default function LiveApp({ side, authenticated }: { side: ShopSide; authe
         ) : (
           <>
             <a href="/" className="mp-button mp-button--ghost mp-btn">{t("live.products")}</a>
+            {hasCatalogue && <>
+              <button type="button" className="mp-button mp-button--ghost mp-btn" aria-current={!catalogueOpen ? "page" : undefined}
+                onClick={() => setCatalogueOpen(false)}>Üretim</button>
+              <button type="button" className="mp-button mp-button--ghost mp-btn" aria-current={catalogueOpen ? "page" : undefined}
+                onClick={() => setCatalogueOpen(true)}>Ürünler ve fiyatlar</button>
+            </>}
             <button type="button" className="mp-button mp-button--ghost mp-btn" disabled={signingOut}
               onClick={() => void signOut()} style={{ marginInlineStart: "auto" }}>{t("live.logout")}</button>
             {logoutFailed && <span role="alert">{t("live.logoutFailed")}</span>}
           </>
         )}
       </nav>
-      {side === "customer" && historyOpen ? <OrderHistory onFollow={() => setHistoryOpen(false)} /> : <App />}
+      {following && <p className="mp-wrap" role="status" lang="tr">Sipariş bilgileri yükleniyor…</p>}
+      {followFailed && <p className="mp-wrap" role="alert" lang="tr">Sipariş bilgileri yüklenemedi. Takip düğmesinden tekrar deneyin.</p>}
+      {side === "customer" && hasCatalogue ? <>
+        <div hidden={historyOpen || view !== "products"}>
+          <CatalogueStorefront onOrder={acknowledgeOrder} onFollow={follow} />
+        </div>
+        {historyOpen ? <>
+          <CatalogueOrderHistory onFollow={follow} />
+          {legacyOrders.length > 0 && <OrderHistory onFollow={() => setHistoryOpen(false)} />}
+        </> : view !== "products" ? <App /> : null}
+      </> : side === "staff" && catalogueOpen && hasCatalogue ? <CatalogueManager />
+        : side === "customer" && historyOpen ? <OrderHistory onFollow={() => setHistoryOpen(false)} /> : <App />}
     </>
   );
 }

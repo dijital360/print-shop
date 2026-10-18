@@ -219,6 +219,8 @@ If you do not have a server, follow the [Railway deployment guide](deploy/RAILWA
 to host the application with a persistent PostgreSQL service.
 Reusable Codex development setup is documented in the
 [cloud environment notes](docs/CLOUD_ENVIRONMENT.md).
+Staff can manage live products and outdoor pricing at `/staff/catalogue`;
+see [product and banner pricing](docs/PRODUCTS.md) for the calculation rules.
 
 ```sh
 npm run build          # tsc -b && vite build

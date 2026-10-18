@@ -2,10 +2,13 @@ import type { BoardColumn, Job, StockRow } from "../lib/jobs.ts";
 import type { BasketLine, DeliveryChoice, PlacedOrder } from "../state/store.ts";
 import type { ArtworkRecord, Now } from "./types.ts";
 import type { Works } from "./source.ts";
+import type { CatalogueOrder, CatalogueOrderSubmission, CatalogueProduct, CatalogueProductDraft, CatalogueQuote, CatalogueReceipt, CatalogueSelection } from "../lib/commerce.ts";
 export type ShopSide = "customer" | "staff";
 export interface ShopSnapshot {
   now: Now; works: Works; orders: PlacedOrder[]; jobs: Job[]; pastJobs: Job[];
   stock: StockRow[]; artwork: ArtworkRecord[];
+  catalogueProducts?: CatalogueProduct[];
+  catalogueOrders?: CatalogueOrder[];
 }
 export interface OrderSubmission {
   requestKey: string; customer: { name: string; email: string };
@@ -32,4 +35,9 @@ export interface ShopGateway {
   uploadJobFile(ref: string, revision: number, kind: JobFileKind, file: File, note?: string): Promise<Job>;
   login(email: string, password: string): Promise<void>;
   logout(): Promise<void>;
+  listCatalogue?(side: ShopSide): Promise<CatalogueProduct[]>;
+  createCatalogueProduct?(product: CatalogueProductDraft): Promise<CatalogueProduct>;
+  updateCatalogueProduct?(id: string, revision: number, product: CatalogueProductDraft): Promise<CatalogueProduct>;
+  quoteCatalogue?(lines: CatalogueSelection[]): Promise<CatalogueQuote>;
+  createCatalogueOrder?(submission: CatalogueOrderSubmission): Promise<CatalogueReceipt>;
 }

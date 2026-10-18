@@ -1,4 +1,5 @@
 import type { Job } from "../lib/jobs.ts";
+import type { CatalogueOrderSubmission, CatalogueProduct, CatalogueProductDraft, CatalogueQuote, CatalogueReceipt, CatalogueSelection } from "../lib/commerce.ts";
 import { MAX_JOB_FILE_BYTES } from "./shopContract.ts";
 import type { JobCommand, JobFileKind, OrderReceipt, OrderSubmission, ShopGateway, ShopSide, ShopSnapshot } from "./shopContract.ts";
 
@@ -16,7 +17,10 @@ export function jobFileUrl(ref: string, fileId: string, side: ShopSide, download
 }
 
 /** Only same-origin routes; session capabilities stay in HttpOnly cookies. */
-export function createShopHttp(send: typeof fetch = globalThis.fetch.bind(globalThis)): ShopGateway {
+export type ShopHttpGateway = ShopGateway & Required<Pick<ShopGateway,
+  "listCatalogue" | "createCatalogueProduct" | "updateCatalogueProduct" | "quoteCatalogue" | "createCatalogueOrder"
+>>;
+export function createShopHttp(send: typeof fetch = globalThis.fetch.bind(globalThis)): ShopHttpGateway {
   async function sendRequest<T>(path: string, options: RequestInit, timeout = 15_000): Promise<T> {
     if (!path.startsWith("/api/shop/")) throw new ShopRequestError("INVALID_REQUEST", 400);
     let response: Response;
@@ -57,5 +61,16 @@ export function createShopHttp(send: typeof fetch = globalThis.fetch.bind(global
     },
     login: async (email, password) => { await request("/api/shop/staff/session", "POST", { email, password }); },
     logout: async () => { await request("/api/shop/staff/session", "DELETE", {}); },
+    listCatalogue: async (side: ShopSide) => {
+      const value = await request<{ products: CatalogueProduct[] }>(`/api/shop/catalogue?side=${encodeURIComponent(side)}`);
+      if (!value || !Array.isArray(value.products)) throw new ShopRequestError("UNAVAILABLE", 200);
+      return value.products;
+    },
+    createCatalogueProduct: (product: CatalogueProductDraft) => request<CatalogueProduct>("/api/shop/catalogue", "POST", product),
+    updateCatalogueProduct: (id: string, revision: number, product: CatalogueProductDraft) =>
+      request<CatalogueProduct>(`/api/shop/catalogue/${encodeURIComponent(id)}`, "PUT", { revision, product }),
+    quoteCatalogue: (lines: CatalogueSelection[]) => request<CatalogueQuote>("/api/shop/catalogue/quote", "POST", { lines }),
+    createCatalogueOrder: (submission: CatalogueOrderSubmission) =>
+      request<CatalogueReceipt>("/api/shop/catalogue/orders", "POST", submission),
   };
 }

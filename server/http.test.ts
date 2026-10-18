@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Job } from "../src/lib/jobs.ts";
+import { BANNER_PRODUCT_DRAFT, type CatalogueProduct, type CatalogueQuote, type CatalogueReceipt, type CatalogueSelection } from "../src/lib/commerce.ts";
 import { MAX_JOB_FILE_BYTES, type JobFile, type OrderReceipt, type OrderSubmission, type ShopSnapshot } from "../src/data/shopContract.ts";
 import { openDatabase, type Database } from "./database.ts";
 import { createShopServer, hashPassword, verifyPassword, type ShopServerOptions } from "./http.ts";
@@ -35,6 +36,11 @@ function mockRepository() {
     changeJob: vi.fn(async (scope: unknown, ref: string, revision: number, command: unknown) => ({ scope, ref, revision, command })),
     uploadJobFile: vi.fn(async (scope: unknown, ref: string, revision: number, input: unknown) => ({ scope, ref, revision, input })),
     readJobFile: vi.fn(async (_scope: unknown, _ref: string, _fileId: string) => ({ file: FILE, bytes: PDF_BYTES })),
+    listProducts: vi.fn(async (_scope: unknown) => [] as CatalogueProduct[]),
+    createProduct: vi.fn(async (product: unknown) => ({ id: "banner-1", revision: 0, ...(product as object) })),
+    updateProduct: vi.fn(async (id: string, revision: number, product: unknown) => ({ id, revision: revision + 1, ...(product as object) })),
+    quoteCatalogue: vi.fn(async (owner: string, lines: unknown) => ({ owner, lines, currency: "TRY", totalCents: 60_000 })),
+    createCatalogueOrder: vi.fn(async (owner: string, submission: unknown) => ({ owner, submission })),
     findStaff: vi.fn(async (_email: string): Promise<{ id: string; passwordHash: string } | null> => null),
     createStaffSession: vi.fn(async (key: string, _staffId: string, expires: number) => { staff.set(key, expires); }),
     validStaffSession: vi.fn(async (key: string) => (staff.get(key) ?? 0) > Date.now()),
@@ -447,6 +453,92 @@ describe("private job file HTTP transport", () => {
   });
 });
 
+describe("managed catalogue HTTP authorization", () => {
+  const lines: CatalogueSelection[] = [{ productId: "banner-1", productRevision: 0,
+    widthMm: 1000, heightMm: 1000, quantity: 1, eyeletsPerItem: 0, weldEdges: false, hemEdges: false }];
+
+  it("requires an explicit catalogue side and keeps customer scope when both cookies exist", async () => {
+    const { base, customer, staff, repository } = await start();
+    expect((await fetch(`${base}/catalogue`)).status).toBe(400);
+    expect((await fetch(`${base}/catalogue?side=customer&side=staff`)).status).toBe(400);
+    expect((await fetch(`${base}/catalogue?side=customer`)).status).toBe(401);
+    expect((await fetch(`${base}/catalogue?side=staff`)).status).toBe(401);
+    expect(repository.listProducts).not.toHaveBeenCalled();
+    const guest = await customer();
+    const staffToken = "v".repeat(43);
+    staff.set(hash(staffToken), Date.now() + 60_000);
+    const headers = { cookie: `${guest.cookie}; print_shop_staff=${staffToken}` };
+    const customerList = await fetch(`${base}/catalogue?side=customer&includeInactive=true`, { headers });
+    expect(await customerList.json()).toEqual({ products: [] });
+    expect(repository.listProducts).toHaveBeenLastCalledWith({ side: "customer", customerHash: hash(tokenFrom(guest.cookie)) });
+    expect((await fetch(`${base}/catalogue?side=staff`, { headers })).status).toBe(200);
+    expect(repository.listProducts).toHaveBeenLastCalledWith({ side: "staff" });
+  });
+
+  it("requires staff sessions for product writes and protects PUT updates with the origin guard", async () => {
+    const origin = "https://shop.example.com";
+    const { base, customer, staff, repository } = await start({ publicOrigin: origin });
+    const guest = await customer();
+    const guestHeaders = { cookie: guest.cookie, Origin: origin, "Content-Type": "application/json" };
+    expect((await fetch(`${base}/catalogue`, {
+      method: "POST", headers: guestHeaders, body: JSON.stringify(BANNER_PRODUCT_DRAFT),
+    })).status).toBe(401);
+    expect((await fetch(`${base}/catalogue/banner-1`, {
+      method: "PUT", headers: guestHeaders, body: JSON.stringify({ revision: 0, product: BANNER_PRODUCT_DRAFT }),
+    })).status).toBe(401);
+    expect(repository.createProduct).not.toHaveBeenCalled();
+    expect(repository.updateProduct).not.toHaveBeenCalled();
+    const staffToken = "w".repeat(43);
+    staff.set(hash(staffToken), Date.now() + 60_000);
+    const headers = { ...guestHeaders, cookie: `${guest.cookie}; print_shop_staff=${staffToken}` };
+    const created = await fetch(`${base}/catalogue`, {
+      method: "POST", headers, body: JSON.stringify(BANNER_PRODUCT_DRAFT),
+    });
+    expect(created.status).toBe(201);
+    expect(repository.createProduct).toHaveBeenCalledWith(BANNER_PRODUCT_DRAFT);
+    const update = { revision: 0, product: { ...BANNER_PRODUCT_DRAFT, active: false } };
+    const updated = await fetch(`${base}/catalogue/banner%2F1`, { method: "PUT", headers, body: JSON.stringify(update) });
+    expect(updated.status).toBe(200);
+    expect(repository.updateProduct).toHaveBeenCalledWith("banner/1", 0, update.product);
+    expect((await fetch(`${base}/catalogue/banner-1`, {
+      method: "PUT", headers: { ...headers, Origin: "https://evil.example.com" }, body: JSON.stringify(update),
+    })).status).toBe(403);
+    expect((await fetch(`${base}/catalogue/banner-1`, {
+      method: "PUT", headers: { ...headers, "Sec-Fetch-Site": "cross-site" }, body: JSON.stringify(update),
+    })).status).toBe(403);
+    for (const body of [null, [], 7, true, "invalid", { product: update.product }, { ...update, revision: -1 }, { ...update, revision: 1.5 },
+      { ...update, side: "staff" }, { revision: 0, product: null }]) {
+      expect((await fetch(`${base}/catalogue/banner-1`, { method: "PUT", headers, body: JSON.stringify(body) })).status).toBe(400);
+    }
+    expect(repository.updateProduct).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses customer capabilities for quotes and orders and rejects client quote totals", async () => {
+    const { base, customer, staff, repository } = await start();
+    const staffToken = "x".repeat(43);
+    staff.set(hash(staffToken), Date.now() + 60_000);
+    const staffHeaders = { cookie: `print_shop_staff=${staffToken}`, "Content-Type": "application/json" };
+    for (const path of ["/catalogue/quote", "/catalogue/orders"]) {
+      expect((await fetch(`${base}${path}`, { method: "POST", headers: staffHeaders, body: "{}" })).status).toBe(401);
+    }
+    expect(repository.quoteCatalogue).not.toHaveBeenCalled();
+    expect(repository.createCatalogueOrder).not.toHaveBeenCalled();
+    const guest = await customer();
+    const owner = hash(tokenFrom(guest.cookie));
+    const headers = { ...staffHeaders, cookie: `${guest.cookie}; print_shop_staff=${staffToken}` };
+    const quote = await fetch(`${base}/catalogue/quote`, { method: "POST", headers, body: JSON.stringify({ lines }) });
+    expect(quote.status).toBe(200);
+    expect(repository.quoteCatalogue).toHaveBeenCalledWith(owner, lines);
+    for (const body of [null, [], 7, true, "invalid", { lines, totalCents: 1 }, { lines: [] }, { lines: null }, { lines, side: "staff" }]) {
+      expect((await fetch(`${base}/catalogue/quote`, { method: "POST", headers, body: JSON.stringify(body) })).status).toBe(400);
+    }
+    expect(repository.quoteCatalogue).toHaveBeenCalledTimes(1);
+    const submission = { requestKey: "catalogue-http-1", customer: { name: "Customer", email: "customer@example.test" }, lines };
+    expect((await fetch(`${base}/catalogue/orders`, { method: "POST", headers, body: JSON.stringify(submission) })).status).toBe(201);
+    expect(repository.createCatalogueOrder).toHaveBeenCalledWith(owner, submission);
+  });
+});
+
 describe("persistent shop HTTP workflow", () => {
   it("preserves real orders and authorized sessions across a server and database restart", async () => {
     const directory = await mkdtemp(join(tmpdir(), "print-shop-http-"));
@@ -628,6 +720,70 @@ describe("persistent shop HTTP workflow", () => {
       expect((await restoredStaff.json() as ShopSnapshot).orders).toEqual([receipt.order]);
       const restoredOther = await fetch(`${restarted.base}/bootstrap?side=customer`, { headers: { cookie: otherCookie } });
       expect((await restoredOther.json() as ShopSnapshot).orders).toEqual([]);
+
+      const staffJson = { cookie: staffCookie, "Content-Type": "application/json" };
+      const customerJson = { cookie: customerCookie, "Content-Type": "application/json" };
+      const managedDraft = { ...BANNER_PRODUCT_DRAFT, name: "HTTP Branda" };
+      const managedResponse = await fetch(`${restarted.base}/catalogue`, {
+        method: "POST", headers: staffJson, body: JSON.stringify(managedDraft),
+      });
+      expect(managedResponse.status).toBe(201);
+      const managed = await managedResponse.json() as CatalogueProduct;
+      const selection: CatalogueSelection = { productId: managed.id, productRevision: managed.revision,
+        widthMm: 2000, heightMm: 1000, quantity: 1, eyeletsPerItem: 4, weldEdges: true, hemEdges: true };
+      const quoteResponse = await fetch(`${restarted.base}/catalogue/quote`, {
+        method: "POST", headers: customerJson, body: JSON.stringify({ lines: [selection] }),
+      });
+      expect(quoteResponse.status).toBe(200);
+      const outdoorQuote = await quoteResponse.json() as CatalogueQuote;
+      expect(outdoorQuote).toMatchObject({ currency: "TRY", subtotalCents: 56_000, taxCents: 11_200, totalCents: 67_200 });
+      expect((await fetch(`${restarted.base}/catalogue/quote`, {
+        method: "POST", headers: customerJson, body: JSON.stringify({ lines: [{ ...selection, unitPriceCents: 1 }] }),
+      })).status).toBe(400);
+      const outdoorSubmission = { requestKey: "http-managed-order-1", customer: submission.customer, lines: [selection] };
+      expect((await fetch(`${restarted.base}/catalogue/orders`, {
+        method: "POST", headers: customerJson, body: JSON.stringify({ ...outdoorSubmission, totalCents: 1 }),
+      })).status).toBe(400);
+      const outdoorResponse = await fetch(`${restarted.base}/catalogue/orders`, {
+        method: "POST", headers: customerJson, body: JSON.stringify(outdoorSubmission),
+      });
+      expect(outdoorResponse.status).toBe(201);
+      const outdoor = await outdoorResponse.json() as CatalogueReceipt;
+      expect(outdoor.order).toMatchObject({ kind: "catalogue", subtotalCents: 56_000, taxCents: 11_200, totalCents: 67_200 });
+      expect(outdoor.jobs).toHaveLength(1);
+      const archivedResponse = await fetch(`${restarted.base}/catalogue/${managed.id}`, {
+        method: "PUT", headers: staffJson,
+        body: JSON.stringify({ revision: managed.revision, product: { ...managedDraft, active: false, unitPriceCents: 19_900 } }),
+      });
+      expect(archivedResponse.status).toBe(200);
+      expect((await fetch(`${restarted.base}/catalogue/${managed.id}`, {
+        method: "PUT", headers: staffJson, body: JSON.stringify({ revision: managed.revision, product: managedDraft }),
+      })).status).toBe(409);
+      const customerCatalogue = await fetch(`${restarted.base}/catalogue?side=customer`, { headers: { cookie: customerCookie } });
+      expect((await customerCatalogue.json() as { products: CatalogueProduct[] }).products.some((product) => product.id === managed.id)).toBe(false);
+      const staffCatalogue = await fetch(`${restarted.base}/catalogue?side=staff`, { headers: { cookie: staffCookie } });
+      expect((await staffCatalogue.json() as { products: CatalogueProduct[] }).products).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: managed.id, active: false, revision: 1 })]),
+      );
+      expect((await fetch(`${restarted.base}/catalogue/quote`, {
+        method: "POST", headers: customerJson, body: JSON.stringify({ lines: [selection] }),
+      })).status).toBe(409);
+      const retried = await fetch(`${restarted.base}/catalogue/orders`, {
+        method: "POST", headers: customerJson, body: JSON.stringify(outdoorSubmission),
+      });
+      expect(retried.status).toBe(201);
+      expect((await retried.json() as CatalogueReceipt).order).toEqual(outdoor.order);
+
+      await close();
+      const finalRestart = await startPersistent();
+      const finalCustomer = await fetch(`${finalRestart.base}/bootstrap?side=customer`, { headers: { cookie: customerCookie } });
+      const finalSnapshot = await finalCustomer.json() as ShopSnapshot;
+      expect(finalSnapshot.orders).toEqual([receipt.order]);
+      expect(finalSnapshot.catalogueOrders).toEqual([outdoor.order]);
+      expect(finalSnapshot.jobs).toHaveLength(3);
+      expect(finalSnapshot.catalogueOrders![0]!.lines[0]!.unitPriceCents).toBe(15_000);
+      const isolatedCatalogue = await fetch(`${finalRestart.base}/bootstrap?side=customer`, { headers: { cookie: otherCookie } });
+      expect((await isolatedCatalogue.json() as ShopSnapshot).catalogueOrders).toEqual([]);
     } finally {
       try { await close(); }
       finally { await rm(directory, { recursive: true, force: true }); }

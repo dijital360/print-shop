@@ -7,6 +7,7 @@
 
 import { BLEED_MM, SRA3_PRINTABLE } from './rates.ts';
 import type { JobFile } from '../data/shopContract.ts';
+import type { CatalogueOrderLine } from './commerce.ts';
 
 // ── imposition ───────────────────────────────────────────────────────────────
 
@@ -105,6 +106,8 @@ export interface ProofEvent {
 }
 
 export interface Job {
+  /** Immutable commercial specification for a product managed by the shop. */
+  catalogueLine?: CatalogueOrderLine;
   /** Server revision for optimistic writes; demo records omit it. */
   revision?: number;
   ref: string;
@@ -276,7 +279,7 @@ export function boardKpis(jobs: readonly Job[], todayIso: string): BoardKpis {
   const live = jobs.filter((j) => columnFor(j.stage) !== null);
   return {
     dueToday: live.filter((j) => dueState(j, todayIso) === 'due-today').length,
-    sheetsToday: live
+    sheetsToday: live.filter((job) => job.catalogueLine === undefined)
       .filter((j) => ['printing', 'finishing'].includes(columnFor(j.stage) ?? ''))
       .reduce((sum, j) => sum + consumptionFor(j).totalSheets, 0),
     waitingOnCustomer: live.filter((j) => isLocked(j)).length,

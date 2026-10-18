@@ -24,6 +24,7 @@ import { TAX_RATE } from "../lib/rates.ts";
 import { useStore, worksBandFor } from "../state/store.ts";
 import { afterAction } from "../state/actionResult.ts";
 import { LIVE } from "../surface.ts";
+import { CatalogueJobDetails } from "./Shop.tsx";
 
 export function Basket() {
   const t = useT();
@@ -127,14 +128,14 @@ export function Basket() {
               <div key={line.id} className="mp-panel mp-panel-pad">
                 <div style={{ display: "flex", gap: 13, alignItems: "flex-start" }}>
                   <Tile
-                    family={product.family}
+                    family={product?.family ?? "paper"}
                     icon={<PackageOpen size={22} aria-hidden="true" />}
                     style={{ inlineSize: 46, blockSize: 46, borderRadius: 11, flex: "0 0 auto" }}
                   />
                   <div style={{ flex: 1, minInlineSize: 0 }}>
                     <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
                       <span style={{ fontSize: 16, fontWeight: 800 }}>
-                        {t(`data.product.${product.key}` as never)}
+                        {t(`data.product.${line.config.product}` as never)}
                       </span>
                       <Mono style={{ fontSize: 15, fontWeight: 700 }}>
                         {cents(quotes[i]!.totalCents)}
@@ -673,7 +674,7 @@ export function OrderLookup() {
             <div className="mp-row" style={{ marginBlockEnd: 16 }}>
               <Mono style={{ fontSize: 18, fontWeight: 700 }}>{job.ref}</Mono>
               <span style={{ fontSize: 15, fontWeight: 700 }}>
-                {t(`data.product.${job.productKey}` as never)}
+                {job.catalogueLine?.productName ?? t(`data.product.${job.productKey}` as never)}
               </span>
               <span style={{ marginInlineStart: "auto", fontSize: 13, color: "var(--fg-muted)" }}>
                 {job.customer}
@@ -700,6 +701,8 @@ export function OrderLookup() {
               })}
             </div>
           </div>
+
+          {job.catalogueLine !== undefined && <CatalogueJobDetails line={job.catalogueLine} />}
 
           {LIVE && <JobFiles key={job.ref} job={job} side="customer" />}
 
@@ -775,7 +778,7 @@ export function OrderLookup() {
             </div>
           )}
 
-          {!LIVE && <div className="mp-panel" style={{ padding: 18 }}>
+          {!LIVE && job.catalogueLine === undefined && <div className="mp-panel" style={{ padding: 18 }}>
             <div style={{ fontSize: 14, fontWeight: 800, marginBlockEnd: 12 }}>
               {t("cust.order.artwork")}
             </div>
@@ -833,7 +836,7 @@ export function OrderLookup() {
             <AddOnSlot
               slot="order.dispatch.panel"
               payload={{
-                order: outboundOrderFor(job, (key) => t(`data.product.${key}` as never)),
+                order: outboundOrderFor(job, (key) => job.catalogueLine?.productName ?? t(`data.product.${key}` as never)),
                 // The works' own clock — see `records.ts`.
                 now: shopClock(todayIso(), now),
               }}

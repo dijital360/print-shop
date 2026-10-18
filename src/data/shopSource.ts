@@ -7,5 +7,6 @@ export function shopSource(snapshot: ShopSnapshot): DataSource {
     pastJobs: () => structuredClone(snapshot.pastJobs), savedQuotes: () => [], customers: () => [],
     stock: () => structuredClone(snapshot.stock), artwork: () => structuredClone(snapshot.artwork),
     nextRef: () => "", works: () => structuredClone(snapshot.works), orders: () => structuredClone(snapshot.orders),
+    catalogueOrders: () => structuredClone(snapshot.catalogueOrders ?? []),
   };
 }

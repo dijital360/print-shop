@@ -298,7 +298,7 @@ function ShopSearch() {
       ? []
       : jobs
           .filter((j) => {
-            const product = t(`data.product.${j.productKey}` as never).toLowerCase();
+            const product = (j.catalogueLine?.productName ?? t(`data.product.${j.productKey}` as never)).toLowerCase();
             return (
               j.ref.toLowerCase().includes(q) ||
               j.customer.toLowerCase().includes(q) ||
@@ -374,7 +374,7 @@ function ShopSearch() {
                   {job.ref}
                 </span>
                 <span style={{ fontSize: 13, flex: 1 }}>
-                  {t(`data.product.${job.productKey}` as never)}
+                  {job.catalogueLine?.productName ?? t(`data.product.${job.productKey}` as never)}
                 </span>
                 <span style={{ fontSize: 11.5, color: "var(--fg-subtle)" }}>{job.customer}</span>
               </button>

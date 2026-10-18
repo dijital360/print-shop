@@ -32,6 +32,7 @@ import {
   Templates,
 } from "../screens/Extras.tsx";
 import { JobsList, Materials, Prices, Ticket, Today } from "../screens/Shop.tsx";
+import { CatalogueManager } from "../screens/Commerce.tsx";
 import { personaFor, useStore } from "../state/store.ts";
 
 export default function App() {
@@ -173,7 +174,7 @@ function Screen() {
     case "materials":
       return <Materials />;
     case "prices":
-      return <Prices />;
+      return LIVE ? <CatalogueManager /> : <Prices />;
     case "addons":
       return <AddOns />;
 

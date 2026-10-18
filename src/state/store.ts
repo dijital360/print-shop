@@ -32,6 +32,7 @@ import {
 import { addWorkingDays, priceQuote, promiseFor, type Configuration } from "../lib/quote.ts";
 import type { StockRow } from "../lib/jobs.ts";
 import { TAX_RATE } from "../lib/rates.ts";
+import type { CatalogueOrder } from "../lib/commerce.ts";
 
 export type Persona = "customer" | "shop";
 
@@ -199,6 +200,7 @@ interface State {
   lookupResult: { kind: "job"; ref: string } | { kind: "quote"; ref: string } | { kind: "none" } | null;
   placedRef: string | null;
   orders: PlacedOrder[];
+  catalogueOrders: CatalogueOrder[];
   submittingOrder: boolean;
   orderAttempt: { key: string; fingerprint: string } | null;
   pendingJobs: string[];
@@ -356,6 +358,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   lookupResult: null,
   placedRef: null,
   orders: source.orders?.() ?? [],
+  catalogueOrders: source.catalogueOrders?.() ?? [],
   submittingOrder: false,
   orderAttempt: null,
   pendingJobs: [],
@@ -627,10 +630,10 @@ export const useStore = create<State & Actions>((set, get) => ({
   setLookup: (patch) => set((s) => ({ lookup: { ...s.lookup, ...patch } })),
 
   doLookup: () => {
-    const { lookup, jobs, pastJobs, savedQuotes, orders } = get();
+    const { lookup, jobs, pastJobs, savedQuotes, orders, catalogueOrders } = get();
     const ref = lookup.ref.trim().toUpperCase();
     if (getShopGateway() !== null) {
-      const order = orders.find((entry) => entry.lines.some((line) => line.jobRef === ref));
+      const order = [...orders, ...catalogueOrders].find((entry) => entry.lines.some((line) => line.jobRef === ref));
       if (order === undefined || order.customer.email.toLowerCase() !== lookup.email.trim().toLowerCase()) {
         set({ lookupResult: { kind: "none" } });
         return;

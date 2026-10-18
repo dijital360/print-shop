@@ -153,15 +153,15 @@ export function outboundOrderFor(job: Job, label: (productKey: string) => string
   const item: SlotItem = {
     id: job.ref,
     key: job.productKey,
-    label: label(job.productKey),
+    label: job.catalogueLine?.productName ?? label(job.productKey),
     quantity: job.quantity,
-    unitWeightGrams: unitWeightGrams(
+    ...(job.catalogueLine === undefined ? { unitWeightGrams: unitWeightGrams(
       job.productKey,
       job.materialKey,
       job.quantity,
       job.trimWidthMm,
       job.trimHeightMm,
-    ),
+    ) } : {}),
     unitSize: { widthMm: job.trimWidthMm, heightMm: job.trimHeightMm },
   };
 

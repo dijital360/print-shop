@@ -28,8 +28,9 @@ import { AddOnSlot } from "../components/AddOnSlot.tsx";
 import { outboundOrderFor, shopClock } from "../add-ons/records.ts";
 import { EmptyState, Mono, Tag, Tile, Typed } from "../components/Primitives.tsx";
 import { JobFiles } from "../components/JobFiles.tsx";
-import { useT } from "../i18n/index.tsx";
+import { useI18n, useT } from "../i18n/index.tsx";
 import { PRODUCT_BY_KEY, type ProductKey } from "../lib/catalogue.ts";
+import type { CatalogueOrderLine } from "../lib/commerce.ts";
 import { cents, day, dueLabel, flatTint, mm, multiplier, num, packagingHint, shortDay } from "../lib/format.ts";
 import {
   BOARD_COLUMNS,
@@ -160,6 +161,7 @@ function JobCard({ job, iso, onDrag }: { job: Job; iso: string; onDrag: (ref: st
   const toast = useStore((s) => s.toast);
 
   const product = PRODUCT_BY_KEY[job.productKey as ProductKey];
+  const family = product?.family ?? (job.catalogueLine?.calculationMode === "area" ? "large" : "paper");
   const state = dueState(job, iso);
   const locked = isLocked(job);
 
@@ -181,7 +183,7 @@ function JobCard({ job, iso, onDrag }: { job: Job; iso: string; onDrag: (ref: st
     >
       <div className="mp-jobcard-top">
         <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          <span className="mp-famdot" style={{ ["--fam" as string]: flatTint(product.family) }} />
+          <span className="mp-famdot" style={{ ["--fam" as string]: flatTint(family) }} />
           <Mono style={{ fontSize: 12, fontWeight: 700 }}>{job.ref}</Mono>
           {locked && (
             <Lock size={12} aria-label={t("shop.board.locked")} style={{ color: "var(--warn)" }} />
@@ -202,9 +204,9 @@ function JobCard({ job, iso, onDrag }: { job: Job; iso: string; onDrag: (ref: st
         </button>
       </div>
 
-      <div className="mp-jobcard-title">{t(`data.product.${job.productKey}` as never)}</div>
+      <div className="mp-jobcard-title">{job.catalogueLine?.productName ?? t(`data.product.${job.productKey}` as never)}</div>
       <div className="mp-jobcard-spec">
-        {num(job.quantity)} · {mm(job.trimWidthMm, job.trimHeightMm)}
+        {num(job.quantity)} · {mm(job.trimWidthMm, job.trimHeightMm)}{job.catalogueLine !== undefined ? " mm" : ""}
       </div>
       <div className="mp-jobcard-foot">
         <span className="mp-jobcard-cust">
@@ -265,10 +267,11 @@ export function Ticket() {
   if (job === null) return <EmptyState>{t("common.nothingHere")}</EmptyState>;
 
   const product = PRODUCT_BY_KEY[job.productKey as ProductKey];
-  const use = consumptionFor(job);
+  const family = product?.family ?? (job.catalogueLine?.calculationMode === "area" ? "large" : "paper");
+  const use = job.catalogueLine === undefined ? consumptionFor(job) : null;
   const material = MATERIAL_BY_KEY[job.materialKey as MaterialKey];
   const line = stockLines(stock, jobs).find((l) => l.key === job.materialKey);
-  const short = line !== undefined && line.onHand < use.totalSheets;
+  const short = line !== undefined && use !== null && line.onHand < use.totalSheets;
   const column = columnFor(job.stage);
   const ready = column === "ready";
 
@@ -281,7 +284,7 @@ export function Ticket() {
 
       <div className="mp-row" style={{ margin: "12px 0 18px" }}>
         <Tile
-          family={product.family}
+          family={family}
           icon={<Printer size={22} aria-hidden="true" />}
           style={{ inlineSize: 46, blockSize: 46, borderRadius: 11, flex: "0 0 auto" }}
         />
@@ -291,7 +294,7 @@ export function Ticket() {
             <Tag>{t(`column.${column ?? "ready"}` as never)}</Tag>
           </div>
           <div style={{ fontSize: 15, fontWeight: 700, marginBlockStart: 2 }}>
-            {t(`data.product.${job.productKey}` as never)} · {job.customer}
+            {job.catalogueLine?.productName ?? t(`data.product.${job.productKey}` as never)} · {job.customer}
           </div>
         </div>
         <Tag
@@ -303,7 +306,7 @@ export function Ticket() {
 
       <div className="mp-ticket">
         <div className="mp-stack" style={{ gap: 16 }}>
-          <div className="mp-panel">
+          {job.catalogueLine !== undefined ? <CatalogueJobDetails line={job.catalogueLine} /> : <div className="mp-panel">
             <div className="mp-panel-head">{t("shop.ticket.spec")}</div>
             <div style={{ padding: "4px 15px 10px" }}>
               <SpecRow label={t("shop.ticket.spec.product")} value={t(`data.product.${job.productKey}` as never)} />
@@ -323,10 +326,10 @@ export function Ticket() {
               />
               <SpecRow label={t("shop.ticket.spec.promise")} value={<Mono>{day(job.promisedFor)}</Mono>} />
             </div>
-          </div>
+          </div>}
 
           {/* The ticket's most interesting number. */}
-          <div className="mp-impos">
+          {use !== null && <div className="mp-impos">
             <div className="mp-eyebrow" style={{ color: "var(--accent)", marginBlockEnd: 6 }}>
               {t("shop.ticket.imposition")}
             </div>
@@ -347,9 +350,9 @@ export function Ticket() {
                 {t("shop.ticket.spoilageNote", { n: job.spoiledSheets }, job.spoiledSheets)}
               </div>
             )}
-          </div>
+          </div>}
 
-          {LIVE ? <JobFiles key={job.ref} job={job} side="staff" /> : <div className="mp-panel mp-panel-pad">
+          {LIVE ? <JobFiles key={job.ref} job={job} side="staff" /> : job.catalogueLine === undefined && product !== undefined && <div className="mp-panel mp-panel-pad">
             <div style={{ fontSize: 14, fontWeight: 800, marginBlockEnd: 11 }}>
               {t("shop.ticket.artwork")}
             </div>
@@ -359,7 +362,7 @@ export function Ticket() {
                 .map((file) => (
                   <div key={file.filename} style={{ border: "1px solid var(--border)", borderRadius: 11, overflow: "hidden" }}>
                     <Tile
-                      family={product.family}
+                      family={family}
                       icon={<FileText size={24} aria-hidden="true" />}
                       chip={file.filename}
                       style={{ blockSize: 78 }}
@@ -423,7 +426,7 @@ export function Ticket() {
         </div>
 
         <div className="mp-stack" style={{ gap: 14 }}>
-          <div className="mp-panel mp-panel-pad">
+          {use !== null && material !== undefined && <div className="mp-panel mp-panel-pad">
             <div style={{ fontSize: 13, fontWeight: 800, marginBlockEnd: 9 }}>
               {t("shop.ticket.shelf")}
             </div>
@@ -449,7 +452,7 @@ export function Ticket() {
             <div style={{ fontSize: 11.5, color: "var(--fg-subtle)", marginBlockStart: 6 }}>
               {material.kind === "sheet" ? t("shop.materials.sheets") : t("shop.materials.metres")}
             </div>
-          </div>
+          </div>}
 
           <div className="mp-panel mp-panel-pad">
             <div style={{ fontSize: 13, fontWeight: 800, marginBlockEnd: 11 }}>
@@ -480,14 +483,14 @@ export function Ticket() {
                   <Printer size={16} aria-hidden="true" style={{ color: "var(--info)" }} />
                   {t("shop.ticket.markPrinted")}
                 </button>
-                <button
+                {job.catalogueLine === undefined && <button
                   type="button"
                   className="mp-action mp-btn"
                   onClick={() => openOverlay({ kind: "spoilage", ref: job.ref })}
                 >
                   <Scissors size={16} aria-hidden="true" style={{ color: "var(--warn)" }} />
                   {t("shop.ticket.recordSpoilage")}
-                </button>
+                </button>}
                 <button
                   type="button"
                   className="mp-button mp-btn"
@@ -543,7 +546,7 @@ export function Ticket() {
                 <AddOnSlot
                   slot="order.dispatch.actions"
                   payload={{
-                    order: outboundOrderFor(job, (key) => t(`data.product.${key}` as never)),
+                    order: outboundOrderFor(job, (key) => job.catalogueLine?.productName ?? t(`data.product.${key}` as never)),
                     // The works' own clock, so "the van has gone" is about the
                     // works' afternoon — see `records.ts`.
                     now: shopClock(todayIso(), now),
@@ -565,6 +568,72 @@ function SpecRow({ label, value }: { label: string; value: React.ReactNode }) {
       <span className="mp-spec-label">{label}</span>
       <span className="mp-spec-value">{value}</span>
     </div>
+  );
+}
+
+const CATALOGUE_JOB_COPY = {
+  title: "Sipariş kalemi",
+  product: "Ürün",
+  material: "Malzeme",
+  size: "Baskı ölçüsü",
+  quantity: "Adet",
+  area: "Toplam alan",
+  eyelets: "Kuşgözü",
+  eyeletsTotal: "toplam",
+  weld: "Kaynak",
+  hem: "Kenar kıvırma",
+  yes: "Var",
+  no: "Yok",
+  tariff: "Birim fiyat",
+  areaUnit: "m²",
+  unit: "adet",
+  taxIncluded: "KDV dahil",
+  taxExcluded: "KDV hariç",
+  printPrice: "Baskı bedeli",
+  subtotal: "Ara toplam",
+  tax: "KDV",
+  total: "Kalem toplamı",
+  minimum: "Sipariş alt limiti farkı, varsa, sipariş toplamında ayrıca yer alır.",
+};
+
+/** Render the captured line; later catalogue edits must not reprice a job. */
+export function CatalogueJobDetails({ line }: { line: CatalogueOrderLine }) {
+  const { money, number } = useI18n();
+  const copy = CATALOGUE_JOB_COPY;
+  const amount = (value: number) => <Mono>{money(value / 100, "TRY")}</Mono>;
+  const edge = (selected: boolean) => selected
+    ? `${copy.yes} · ${number(line.perimeterMetres, { maximumFractionDigits: 3 })} m`
+    : copy.no;
+
+  return (
+    <section className="mp-panel" aria-label={copy.title}>
+      <h2 className="mp-panel-head" style={{ margin: 0 }}>{copy.title}</h2>
+      <div style={{ padding: "4px 15px 10px" }}>
+        <SpecRow label={copy.product} value={<Typed>{line.productName}</Typed>} />
+        <SpecRow label={copy.material} value={<Typed>{line.materialName}</Typed>} />
+        <SpecRow label={copy.size} value={<Mono>{mm(line.widthMm, line.heightMm)} mm</Mono>} />
+        <SpecRow label={copy.quantity} value={<Mono>{number(line.quantity)}</Mono>} />
+        {line.calculationMode === "area" && <SpecRow label={copy.area}
+          value={<Mono>{number(line.areaSqm, { maximumFractionDigits: 4 })} {copy.areaUnit}</Mono>} />}
+        <SpecRow label={copy.eyelets} value={<Mono>
+          {number(line.eyeletsPerItem)} / {copy.unit} · {number(line.eyeletsPerItem * line.quantity)} {copy.eyeletsTotal}
+        </Mono>} />
+        <SpecRow label={copy.weld} value={edge(line.weldEdges)} />
+        <SpecRow label={copy.hem} value={edge(line.hemEdges)} />
+        <SpecRow label={copy.tariff} value={<span>
+          {amount(line.unitPriceCents)} / {line.calculationMode === "area" ? copy.areaUnit : copy.unit}
+          {" · "}{line.taxIncluded ? copy.taxIncluded : copy.taxExcluded}
+        </span>} />
+        <SpecRow label={copy.printPrice} value={amount(line.baseCents)} />
+        <SpecRow label={copy.eyelets} value={amount(line.eyeletsCents)} />
+        <SpecRow label={copy.weld} value={amount(line.weldCents)} />
+        <SpecRow label={copy.hem} value={amount(line.hemCents)} />
+        <SpecRow label={copy.subtotal} value={amount(line.subtotalCents)} />
+        <SpecRow label={`${copy.tax} (%${number(line.taxRateBps / 100)})`} value={amount(line.taxCents)} />
+        <SpecRow label={copy.total} value={<strong>{amount(line.totalCents)}</strong>} />
+        <p style={{ fontSize: 12, color: "var(--fg-muted)", marginBlockEnd: 0 }}>{copy.minimum}</p>
+      </div>
+    </section>
   );
 }
 
@@ -600,15 +669,15 @@ export function JobsList() {
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
                     <span
                       className="mp-famdot"
-                      style={{ ["--fam" as string]: flatTint(PRODUCT_BY_KEY[job.productKey as ProductKey].family) }}
+                      style={{ ["--fam" as string]: flatTint(PRODUCT_BY_KEY[job.productKey as ProductKey]?.family ?? (job.catalogueLine?.calculationMode === "area" ? "large" : "paper")) }}
                     />
                     <Mono style={{ fontWeight: 700 }}>{job.ref}</Mono>
                   </span>
                 </td>
                 <td>
-                  <span style={{ fontWeight: 700 }}>{t(`data.product.${job.productKey}` as never)}</span>
+                  <span style={{ fontWeight: 700 }}>{job.catalogueLine?.productName ?? t(`data.product.${job.productKey}` as never)}</span>
                   <Mono style={{ display: "block", fontSize: 10.5, color: "var(--fg-subtle)" }}>
-                    {num(job.quantity)} · {mm(job.trimWidthMm, job.trimHeightMm)}
+                    {num(job.quantity)} · {mm(job.trimWidthMm, job.trimHeightMm)}{job.catalogueLine !== undefined ? " mm" : ""}
                   </Mono>
                 </td>
                 <td style={{ color: "var(--fg-muted)" }}>{job.customer}</td>

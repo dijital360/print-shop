@@ -15,7 +15,7 @@ ENV NODE_ENV=production \
 COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json package-lock.json ./
 COPY --chown=node:node server/main.ts server/http.ts server/database.ts server/repository.ts server/fileValidation.ts server/cli.ts ./server/
-COPY --chown=node:node src/lib/catalogue.ts src/lib/jobs.ts src/lib/quote.ts src/lib/rates.ts ./src/lib/
+COPY --chown=node:node src/lib/catalogue.ts src/lib/jobs.ts src/lib/quote.ts src/lib/rates.ts src/lib/commerce.ts ./src/lib/
 COPY --chown=node:node src/data/shopContract.ts src/data/types.ts ./src/data/
 COPY --chown=node:node db/schema.sql ./db/schema.sql
 COPY --chown=node:node db/migrations ./db/migrations

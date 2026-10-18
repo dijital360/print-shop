@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { PRODUCTS, PRODUCT_BY_KEY, incompatibleReason } from '../src/lib/catalogue.ts';
-import { MATERIALS, DELIVERY_BY_KEY, TAX_RATE, LARGE_FORMAT_MAX_QUANTITY } from '../src/lib/rates.ts';
+import { MATERIALS, DELIVERY_BY_KEY, TAX_RATE, LARGE_FORMAT_MAX_QUANTITY, CUTOFF_HOUR } from '../src/lib/rates.ts';
 import { addWorkingDays, priceQuote, promiseFor } from '../src/lib/quote.ts';
 import type { JobCommand, OrderReceipt, OrderSubmission, ShopSnapshot } from '../src/data/shopContract.ts';
 import { MAX_JOB_FILES } from '../src/data/shopContract.ts';
@@ -10,6 +10,8 @@ import type { BasketLine, PlacedOrder } from '../src/state/store.ts';
 import type { Database } from './database.ts';
 import { FileValidationError, validateJobFile } from './fileValidation.ts';
 import type { JobFileInput } from './fileValidation.ts';
+import { BANNER_PRODUCT_DRAFT, DomainError, quoteCatalogue as priceCatalogue, validateCatalogueProductDraft, validateCatalogueSelection } from '../src/lib/commerce.ts';
+import type { CatalogueOrder, CatalogueOrderLine, CatalogueOrderSubmission, CatalogueProduct, CatalogueProductDraft, CatalogueQuote, CatalogueReceipt, CatalogueSelection } from '../src/lib/commerce.ts';
 
 type Job = ShopSnapshot['jobs'][number];
 type Works = ShopSnapshot['works'];
@@ -28,6 +30,13 @@ export class RepoError extends Error {
 }
 
 const fail = (code: string, status: number, message?: string): never => { throw new RepoError(code, status, message); };
+function commerce<T>(operation: () => T): T {
+  try { return operation(); }
+  catch (error) {
+    if (error instanceof DomainError) throw new RepoError(error.code, error.status, error.message);
+    throw error;
+  }
+}
 function object(value: unknown, allowed: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail('INVALID_ORDER', 400, 'An object is required.');
   const result = value as Record<string, unknown>;
@@ -110,11 +119,16 @@ interface JobRow {
   proofs: { kind: Job['proofs'][number]['kind']; at: string; note: string | null; fileId: string | null }[];
   files: (JobFile & { artworkId: string | null })[];
   dispatch: { kind: 'collected' | 'carrier'; at: string; tracking: string | null } | null;
+  catalogue_line: CatalogueOrderLine | null;
 }
+
+interface ProductRow { id: string; revision: number; definition: CatalogueProductDraft }
+const productFrom = (row: ProductRow): CatalogueProduct => ({ ...row.definition, id: row.id, revision: row.revision });
 
 const JOB_SELECT = `SELECT j.*, p.key AS product_key, m.key AS material_key,
   COALESCE(o.snapshot->'customer'->>'name', c.name) AS customer_name,
   to_char(j.promised_for, 'YYYY-MM-DD') AS promised_date, o.owner_session_hash,
+  (SELECT line FROM jsonb_array_elements(CASE WHEN o.snapshot->>'kind'='catalogue' THEN o.snapshot->'lines' ELSE '[]'::jsonb END) line WHERE line->>'jobRef'=j.ref LIMIT 1) AS catalogue_line,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', pr.kind, 'at', to_char(pr.at, 'YYYY-MM-DD'), 'note', pr.note, 'fileId', pr.file_id) ORDER BY pr.id)
     FROM public.proofs pr WHERE pr.job_id=j.id), '[]'::jsonb) AS proofs,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id', f.id, 'kind', f.kind, 'filename', f.filename,
@@ -134,6 +148,7 @@ function jobFrom(row: JobRow): Job {
     proofs: row.proofs.map((proof) => ({ kind: proof.kind, at: proof.at, ...(proof.note === null ? {} : { note: proof.note }), ...(proof.fileId === null ? {} : { fileId: proof.fileId }) })),
     files: row.files.map(fileMetadata),
     spoiledSheets: row.spoiled_sheets, revision: row.revision,
+    ...(row.catalogue_line === null ? {} : { catalogueLine: row.catalogue_line }),
     ...(row.dispatch === null ? {} : { dispatch: { kind: row.dispatch.kind, at: new Date(row.dispatch.at).toISOString(), ...(row.dispatch.tracking === null ? {} : { tracking: row.dispatch.tracking }) } }),
   };
 }
@@ -167,6 +182,98 @@ export class ShopRepository {
     return { iso: `${get('year')}-${get('month')}-${get('day')}`, hour: Number(get('hour')), minute: Number(get('minute')) };
   }
 
+  private async syncCatalogueProduct(db: Database, product: CatalogueProduct): Promise<void> {
+    await db.query(`INSERT INTO public.products(key,name,family,from_quantity,sides_choice) VALUES($1,$2,$3,1,false)
+      ON CONFLICT(key) DO UPDATE SET name=EXCLUDED.name,family=EXCLUDED.family`, [`catalogue-${product.id}`, product.name, product.calculationMode === 'area' ? 'large' : 'paper']);
+  }
+
+  async listProducts(scope: Scope, includeInactive = scope.side === 'staff'): Promise<CatalogueProduct[]> {
+    if (scope.side === 'customer') await this.requireCustomer(this.db, scope.customerHash);
+    const all = scope.side === 'staff' && includeInactive;
+    return (await this.db.query<ProductRow>(`SELECT id,revision,definition FROM print_shop.catalogue_products${all ? '' : " WHERE definition->>'active'='true'"} ORDER BY created_at,id`)).rows.map(productFrom);
+  }
+
+  async createProduct(input: CatalogueProductDraft): Promise<CatalogueProduct> {
+    const draft = commerce(() => validateCatalogueProductDraft(input));
+    return this.db.transaction(async (db) => {
+      const id = randomUUID();
+      const row = (await db.query<ProductRow>('INSERT INTO print_shop.catalogue_products(id,definition) VALUES($1,$2::jsonb) RETURNING id,revision,definition', [id, JSON.stringify(draft)])).rows[0]!;
+      const product = productFrom(row);
+      await this.syncCatalogueProduct(db, product);
+      return product;
+    });
+  }
+
+  async updateProduct(id: string, revision: number, input: CatalogueProductDraft): Promise<CatalogueProduct> {
+    if (typeof id !== 'string' || !id || id.length > 128 || !Number.isSafeInteger(revision) || revision < 0) fail('INVALID_PRODUCT', 400, 'A product identifier and revision are required.');
+    const draft = commerce(() => validateCatalogueProductDraft(input));
+    return this.db.transaction(async (db) => {
+      const row = (await db.query<ProductRow>('SELECT id,revision,definition FROM print_shop.catalogue_products WHERE id=$1 FOR UPDATE', [id])).rows[0];
+      if (!row) return fail('NOT_FOUND', 404, 'Product not found.');
+      if (row.revision !== revision) fail('CONFLICT', 409, 'This product has changed. Reload before trying again.');
+      const saved = (await db.query<ProductRow>('UPDATE print_shop.catalogue_products SET definition=$2::jsonb,revision=revision+1,updated_at=$3 WHERE id=$1 RETURNING id,revision,definition', [id, JSON.stringify(draft), this.clock().toISOString()])).rows[0]!;
+      const product = productFrom(saved);
+      await this.syncCatalogueProduct(db, product);
+      return product;
+    });
+  }
+
+  private catalogueSelections(input: unknown): CatalogueSelection[] {
+    if (!Array.isArray(input) || input.length < 1 || input.length > 50) return fail('INVALID_ORDER', 400, 'Orders require 1–50 lines.');
+    return input.map((selection) => commerce(() => validateCatalogueSelection(selection)));
+  }
+
+  private async catalogueQuote(db: Database, lines: CatalogueSelection[], lock = false): Promise<CatalogueQuote> {
+    const ids = [...new Set(lines.map((line) => line.productId))];
+    const products = (await db.query<ProductRow>(`SELECT id,revision,definition FROM print_shop.catalogue_products WHERE id=ANY($1::text[]) ORDER BY id${lock ? ' FOR SHARE' : ''}`, [ids])).rows.map(productFrom);
+    return commerce(() => priceCatalogue(products, lines));
+  }
+
+  async quoteCatalogue(ownerHash: string, input: readonly CatalogueSelection[]): Promise<CatalogueQuote> {
+    await this.requireCustomer(this.db, ownerHash);
+    return this.catalogueQuote(this.db, this.catalogueSelections(input));
+  }
+
+  async createCatalogueOrder(ownerHash: string, submission: CatalogueOrderSubmission): Promise<CatalogueReceipt> {
+    const body = object(submission, ['requestKey', 'customer', 'lines']);
+    const requestKey = text(body.requestKey, 128);
+    const details = object(body.customer, ['name', 'email']);
+    const customer = { name: text(details.name, 200), email: text(details.email, 254).toLowerCase() };
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customer.email)) fail('INVALID_ORDER', 400, 'A valid email is required.');
+    const selections = this.catalogueSelections(body.lines);
+    const hash = createHash('sha256').update(canonical({ kind: 'catalogue', customer, lines: selections })).digest('hex');
+    return this.db.transaction(async (db) => {
+      await this.requireCustomer(db, ownerHash, true);
+      const previous = (await db.query<{ id: string; snapshot: CatalogueOrder; payload_hash: string }>('SELECT id,snapshot,payload_hash FROM print_shop.orders WHERE owner_session_hash=$1 AND request_key=$2', [ownerHash, requestKey])).rows[0];
+      if (previous) {
+        if (previous.snapshot.kind !== 'catalogue' || previous.payload_hash !== hash) fail('CONFLICT', 409, 'This request key already belongs to another basket.');
+        const jobs = (await db.query<JobRow>(`${JOB_SELECT} WHERE j.order_id=$1 ORDER BY j.id`, [previous.id])).rows.map(jobFrom);
+        return { order: previous.snapshot, jobs };
+      }
+      // A retry above remains valid after later tariff edits or archival.
+      const quote = await this.catalogueQuote(db, selections, true);
+      await db.query('INSERT INTO public.customers(name,email,town) VALUES($1,$2,$3) ON CONFLICT DO NOTHING', [customer.name, customer.email, '']);
+      const customerId = (await db.query<{ id: number }>('SELECT id FROM public.customers WHERE lower(email)=$1', [customer.email])).rows[0]!.id;
+      const now = this.now();
+      const baseDate = now.hour < CUTOFF_HOUR ? now.iso : addWorkingDays(now.iso, 1);
+      const lines: CatalogueOrderLine[] = [];
+      for (const line of quote.lines) lines.push({ ...line, jobRef: await this.nextReference(db), readyBy: addWorkingDays(baseDate, line.leadDays) });
+      const order: CatalogueOrder = {
+        kind: 'catalogue', ref: lines[0]!.jobRef, customer, placedOn: now.iso,
+        readyBy: lines.map((line) => line.readyBy).sort().at(-1)!, currency: quote.currency,
+        lines, subtotalCents: quote.subtotalCents, taxCents: quote.taxCents,
+        totalCents: quote.totalCents, minimumTopUpCents: quote.minimumTopUpCents,
+      };
+      const orderId = (await db.query<{ id: string }>('INSERT INTO print_shop.orders(ref,owner_session_hash,request_key,payload_hash,snapshot) VALUES($1,$2,$3,$4,$5::jsonb) RETURNING id', [order.ref, ownerHash, requestKey, hash, JSON.stringify(order)])).rows[0]!.id;
+      await db.query("INSERT INTO public.materials(key,name,kind,gsm,sheet_cost,on_hand,reorder_at) VALUES('catalogue-media','Managed catalogue media','roll',NULL,0,0,0) ON CONFLICT(key) DO NOTHING");
+      for (const line of lines) await db.query(`INSERT INTO public.jobs(ref,customer_id,product_id,material_id,quantity,trim_width_mm,trim_height_mm,sides,finish_key,packaging_key,stage,promised_for,express,total,order_id)
+        VALUES($1,$2,(SELECT id FROM public.products WHERE key=$3),(SELECT id FROM public.materials WHERE key='catalogue-media'),$4,$5,$6,1,$7,'bundled','ordered',$8,false,$9,$10)`,
+      [line.jobRef, customerId, `catalogue-${line.productId}`, line.quantity, line.widthMm, line.heightMm, line.calculationMode === 'area' ? 'plain-edges' : 'none', line.readyBy, line.totalCents / 100, orderId]);
+      const jobs = (await db.query<JobRow>(`${JOB_SELECT} WHERE j.order_id=$1 ORDER BY j.id`, [orderId])).rows.map(jobFrom);
+      return { order, jobs };
+    });
+  }
+
   async initialize(): Promise<void> {
     await this.db.transaction(async (db) => {
       // Lock before inspecting emptiness so only the first instance may bootstrap.
@@ -180,8 +287,16 @@ export class ShopRepository {
       }
       await db.exec(await readFile(new URL('../db/migrations/001-orders.sql', import.meta.url), 'utf8'));
       await db.exec(await readFile(new URL('../db/migrations/002-job-files.sql', import.meta.url), 'utf8'));
+      await db.exec(await readFile(new URL('../db/migrations/003-catalogue.sql', import.meta.url), 'utf8'));
       for (const product of PRODUCTS) await db.query('INSERT INTO public.products(key,name,family,from_quantity,sides_choice) VALUES($1,$2,$3,$4,$5) ON CONFLICT(key) DO NOTHING', [product.key, product.key, product.family, product.fromQuantity, product.sidesChoice]);
       for (const material of MATERIALS) await db.query('INSERT INTO public.materials(key,name,kind,gsm,sheet_cost,on_hand,reorder_at) VALUES($1,$2,$3,$4,$5,0,0) ON CONFLICT(key) DO NOTHING', [material.key, material.key, material.kind, material.gsm || null, material.rateCents / 100]);
+      if (!(await db.query('SELECT 1 FROM print_shop.schema_migrations WHERE version=3')).rows.length) {
+        const draft = commerce(() => validateCatalogueProductDraft(BANNER_PRODUCT_DRAFT));
+        await db.query('INSERT INTO print_shop.catalogue_products(id,definition) VALUES($1,$2::jsonb) ON CONFLICT(id) DO NOTHING', ['branda', JSON.stringify(draft)]);
+        const seeded = (await db.query<ProductRow>('SELECT id,revision,definition FROM print_shop.catalogue_products WHERE id=$1', ['branda'])).rows[0]!;
+        await this.syncCatalogueProduct(db, productFrom(seeded));
+        await db.query('INSERT INTO print_shop.schema_migrations(version) VALUES(3)');
+      }
     });
   }
 
@@ -216,12 +331,12 @@ export class ShopRepository {
     const hash = createHash('sha256').update(canonical({ customer: clean.customer, lines: clean.lines, deliveryChoice: clean.deliveryChoice })).digest('hex');
     return this.db.transaction(async (db) => {
       await this.requireCustomer(db, ownerHash, true);
-      const previous = await db.query<{ id: string; snapshot: PlacedOrder; payload_hash: string }>('SELECT id,snapshot,payload_hash FROM print_shop.orders WHERE owner_session_hash=$1 AND request_key=$2', [ownerHash, clean.requestKey]);
+      const previous = await db.query<{ id: string; snapshot: PlacedOrder | CatalogueOrder; payload_hash: string }>('SELECT id,snapshot,payload_hash FROM print_shop.orders WHERE owner_session_hash=$1 AND request_key=$2', [ownerHash, clean.requestKey]);
       if (previous.rows[0]) {
         const saved = previous.rows[0];
-        if (saved.payload_hash !== hash) fail('CONFLICT', 409, 'This request key already belongs to another basket.');
+        if (('kind' in saved.snapshot && saved.snapshot.kind === 'catalogue') || saved.payload_hash !== hash) fail('CONFLICT', 409, 'This request key already belongs to another basket.');
         const jobs = await db.query<JobRow>(`${JOB_SELECT} WHERE j.order_id=$1 ORDER BY j.id`, [saved.id]);
-        return { order: saved.snapshot, jobs: jobs.rows.map(jobFrom) };
+        return { order: saved.snapshot as PlacedOrder, jobs: jobs.rows.map(jobFrom) };
       }
       await db.query('INSERT INTO public.customers(name,email,town) VALUES($1,$2,$3) ON CONFLICT DO NOTHING', [clean.customer.name, clean.customer.email, '']);
       const customer = (await db.query<{ id: number }>('SELECT id FROM public.customers WHERE lower(email)=$1', [clean.customer.email])).rows[0]!;
@@ -256,11 +371,14 @@ export class ShopRepository {
     const parameters = scope.side === 'customer' ? [scope.customerHash] : [];
     const rows = (await this.db.query<JobRow>(`${JOB_SELECT}${filter} ORDER BY j.id`, parameters)).rows;
     const jobs = rows.map(jobFrom);
-    const orders = await this.db.query<{ snapshot: PlacedOrder }>(`SELECT snapshot FROM print_shop.orders${scope.side === 'customer' ? ' WHERE owner_session_hash=$1' : ''} ORDER BY id`, parameters);
-    const stock = scope.side === 'staff' ? (await this.db.query<{ key: string; kind: 'sheet' | 'roll'; on_hand: number; reorder_at: number }>('SELECT key,kind,on_hand,reorder_at FROM public.materials ORDER BY id')).rows.map((row) => ({ key: row.key, kind: row.kind, onHand: row.on_hand, reorderAt: row.reorder_at })) : [];
+    const orderOwner = scope.side === 'customer' ? 'owner_session_hash=$1 AND ' : '';
+    const orders = await this.db.query<{ snapshot: PlacedOrder }>(`SELECT snapshot FROM print_shop.orders WHERE ${orderOwner}COALESCE(snapshot->>'kind','legacy')<>'catalogue' ORDER BY id`, parameters);
+    const catalogueOrders = await this.db.query<{ snapshot: CatalogueOrder }>(`SELECT snapshot FROM print_shop.orders WHERE ${orderOwner}snapshot->>'kind'='catalogue' ORDER BY id`, parameters);
+    const stock = scope.side === 'staff' ? (await this.db.query<{ key: string; kind: 'sheet' | 'roll'; on_hand: number; reorder_at: number }>('SELECT key,kind,on_hand,reorder_at FROM public.materials WHERE key=ANY($1::text[]) ORDER BY id', [MATERIALS.map((material) => material.key)])).rows.map((row) => ({ key: row.key, kind: row.kind, onHand: row.on_hand, reorderAt: row.reorder_at })) : [];
     const artwork = await this.db.query<{ job_ref: string; filename: string; width_px: number; height_px: number; width_mm: string; height_mm: string; bleed_mm: string; nearest_ink_mm: string; colour_space: 'CMYK' | 'RGB'; fonts_embedded: boolean; pages: number; source: string | null }>(`SELECT j.ref AS job_ref,a.filename,a.width_px,a.height_px,a.width_mm,a.height_mm,a.bleed_mm,a.nearest_ink_mm,a.colour_space,a.fonts_embedded,a.pages,a.source FROM public.artwork a JOIN public.jobs j ON j.id=a.job_id LEFT JOIN print_shop.orders o ON o.id=j.order_id${filter} ORDER BY a.id`, parameters);
     return {
       now: this.now(), works: structuredClone(this.works), orders: orders.rows.map((row) => row.snapshot),
+      catalogueProducts: await this.listProducts(scope), catalogueOrders: catalogueOrders.rows.map((row) => row.snapshot),
       jobs: jobs.filter((job) => job.stage !== 'collected' && job.stage !== 'dispatched'),
       pastJobs: jobs.filter((job) => job.stage === 'collected' || job.stage === 'dispatched'), stock,
       artwork: artwork.rows.map((row) => ({ jobRef: row.job_ref, filename: row.filename, widthPx: row.width_px, heightPx: row.height_px, widthMm: Number(row.width_mm), heightMm: Number(row.height_mm), bleedMm: Number(row.bleed_mm), nearestInkMm: Number(row.nearest_ink_mm), colourSpace: row.colour_space, fontsEmbedded: row.fonts_embedded, pages: row.pages, ...(row.source === null ? {} : { source: row.source }) })),
