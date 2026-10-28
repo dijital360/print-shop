@@ -221,6 +221,7 @@ Reusable Codex development setup is documented in the
 [cloud environment notes](docs/CLOUD_ENVIRONMENT.md).
 Staff can manage live products and outdoor pricing at `/staff/catalogue`;
 see [product and banner pricing](docs/PRODUCTS.md) for the calculation rules.
+For the offline Windows package, see [Windows local setup](docs/WINDOWS.md).
 
 ```sh
 npm run build          # tsc -b && vite build

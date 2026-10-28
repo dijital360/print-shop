@@ -1,0 +1,41 @@
+﻿DİJİTAL360 PRINT SHOP - İNTERNETSİZ WINDOWS PAKETİ
+
+Windows 10/11, x64 veya ARM64 içindir. 32 bit Windows desteklenmez.
+Bilgisayara Node.js, Git veya başka bir program kurmanız, yönetici olarak
+çalıştırmanız ya da başlatmak için internete bağlanmanız gerekmez.
+
+BAŞLATMA
+1. ZIP dosyasını önce bilgisayarınızdaki normal bir klasöre tamamen çıkartın.
+   Uygulamayı ZIP'in içinden çalıştırmayın; app ve runtime klasörlerini ayırmayın.
+2. Çıkarttığınız klasördeki Baslat.cmd dosyasına çift tıklayın.
+3. Tarayıcı otomatik açılır. Açılan komut penceresi uygulama çalışırken açık kalır.
+
+PERSONEL GİRİŞİ
+İlk kullanımda kişisel personel giriş bilgileri bilgisayarınızda oluşturulur ve
+yalnız Windows'un yerel penceresinde gösterilir. ZIP paketinde parola bulunmaz.
+Bu bilgileri sohbetlere, paylaşılan ekran görüntülerine veya başka kişilere
+göndermeyin.
+
+Daha sonra bilgileri yeniden görmek için Giris-Bilgileri.cmd dosyasına çift
+tıklayın. Bilgiler Windows DPAPI ile korunur; yalnız oluşturuldukları bilgisayar
+ve aynı Windows kullanıcısı tarafından yerel pencerede çözülebilir.
+
+KAPATMA
+Baslat.cmd ile açılan komut penceresine tıklayıp Ctrl+C tuşlarına basın.
+Yalnız tarayıcı sekmesini kapatmak uygulamayı durdurmaz.
+
+VERİLER VE GÜNCELLEME
+Sipariş ve dosya verileri aşağıdaki kişisel klasörde saklanır:
+%LOCALAPPDATA%\Dijital360\PrintShop\database
+
+Aynı bilgisayar ve Windows kullanıcısıyla yeni paketi ayrı bir klasöre çıkartıp
+başlattığınızda mevcut veriler korunur. Kişisel veri klasörünü silmeyin.
+Yedek almadan veya paket güncellemeden önce uygulamayı Ctrl+C ile kapatın.
+
+HATA OLURSA
+Eksik dosya veya çalışma zamanı doğrulama hatasında ZIP'i yeniden ve tamamen
+çıkartın. Hata penceresi okunabilmesi için açık kalır. PowerShell güvenlik
+politikasını değiştirmeniz veya yönetici izni vermeniz gerekmez.
+
+DOĞRULAMA NOTU
+Bu sürüm henüz gerçek bir Windows cihazında çalıştırılarak doğrulanmadı.

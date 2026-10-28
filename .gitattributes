@@ -1,0 +1,2 @@
+# Keep the Windows launcher's CRLF bytes intact in checkouts and source archives.
+packaging/windows/* -text whitespace=cr-at-eol
