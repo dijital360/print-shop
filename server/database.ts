@@ -14,7 +14,7 @@ export interface Database {
 }
 
 /** PGlite's filesystem belongs to one process, including administration tools. */
-async function lockDirectory(dataDir: string): Promise<() => Promise<void>> {
+export async function acquireDatabaseLock(dataDir: string, options: { recoverStale?: boolean } = {}): Promise<() => Promise<void>> {
   const lockPath = `${await realpath(dataDir)}.lock`;
   const token = randomUUID();
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -36,6 +36,7 @@ async function lockDirectory(dataDir: string): Promise<() => Promise<void>> {
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if (options.recoverStale === false) throw new Error('The local Print Shop database is already open or locked.');
       let stale = false;
       try {
         const before = await stat(lockPath);
@@ -93,7 +94,7 @@ export async function openDatabase(options: { dataDir?: string; connectionString
 
   const dataDir = options.dataDir ?? process.env.PRINT_SHOP_DATA_DIR ?? path.resolve('.print-shop.local/database');
   if (dataDir !== 'memory://') await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  const release = dataDir === 'memory://' ? async () => {} : await lockDirectory(dataDir);
+  const release = dataDir === 'memory://' ? async () => {} : await acquireDatabaseLock(dataDir);
   let embedded: PGlite;
   try { embedded = await PGlite.create(dataDir); }
   catch (error) { await release(); throw error; }

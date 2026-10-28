@@ -9,6 +9,11 @@ Node.js, Docker veya ek bir veritabanı kurulmaz. Yönetici yetkisi gerekmez.
 3. İlk giriş bilgileri yalnız bilgisayarınızdaki Windows bilgi penceresinde
    gösterilir. Yeniden görmek için **Giris-Bilgileri.cmd** dosyasını açın.
 
+İsterseniz **Masaustune-Ekle.cmd** dosyasına çift tıklayarak masaüstü kısayolu
+oluşturun. Kısayol paketi çıkarttığınız mevcut klasöre bağlıdır. Bu klasörü
+sonradan taşımayın; taşır veya yeni bir klasörden kullanmaya başlarsanız
+**Masaustune-Ekle.cmd** dosyasını yeni konumunda yeniden çalıştırın.
+
 Parola ilk çalıştırmada rastgele oluşturulur; pakette sabit parola yoktur.
 Kayıt, Windows DPAPI `CurrentUser` ile şifrelenir. Sohbete, komut satırı
 argümanlarına veya düz metin dosyasına parola yazılmaz. Var olan personel
@@ -19,6 +24,19 @@ kalır. Bunlar Railway verilerinden bağımsız yerel kayıtlardır. Paketi baş
 bir klasöre çıkarmak bu veri klasörünü değiştirmez. Güncellemeden önce açık
 uygulama penceresinde **Ctrl+C** ile durdurun, sonra yeni paketi başlatın.
 Aynı anda yeniden başlatma mevcut çalışan uygulamanın tarayıcısını açar.
+
+## Yerel yedek alma
+
+1. Uygulamanın açık komut penceresinde **Ctrl+C** ile durdurun ve kapanmasını
+   bekleyin.
+2. **Yedek-Al.cmd** dosyasına çift tıklayın. Veritabanı hâlâ kullanılıyorsa
+   işlem reddedilir; önce çalışan uygulamayı kapatın.
+3. Yedek `%USERPROFILE%\Dijital360-Yedekler` klasörüne yazılır. Veritabanı ve
+   DPAPI ile şifrelenmiş kişisel giriş kaydı birlikte saklanır.
+
+Yedekleri özel tutun. Giriş kaydı yalnız aynı bilgisayar ve aynı Windows
+kullanıcısıyla çözülebilir; farklı bilgisayar veya Windows kullanıcısına geri
+yükleme bu pakette sunulmaz.
 
 Uygulama yalnız `127.0.0.1` üzerinde çalışır; başlangıç portu doluysa boş bir
 port seçilir. PowerShell yürütme politikası, güvenlik duvarı veya TLS

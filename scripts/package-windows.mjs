@@ -11,11 +11,15 @@ const execute = promisify(execFile);
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const archiveRoot = 'Dijital360-PrintShop';
 const expectedVersion = 'v24.19.0';
+const rootFiles = ['Baslat.cmd', 'Giris-Bilgileri.cmd', 'Masaustune-Ekle.cmd', 'Yedek-Al.cmd', 'BENI-OKU.txt'];
+const windowsHelpers = [
+  'scripts/windows-launch.mjs', 'server/local.ts', 'server/windowsLauncher.ts',
+  'server/windowsCredentials.ts', 'server/windowsBackup.ts', 'server/windowsShell.ts',
+];
 const requiredSource = [
-  'LICENSE', 'package.json', 'package-lock.json', 'scripts/windows-launch.mjs',
-  'server/local.ts', 'server/windowsLauncher.ts', 'server/windowsCredentials.ts',
+  'LICENSE', 'package.json', 'package-lock.json', ...windowsHelpers,
   'server/http.ts', 'server/database.ts', 'server/repository.ts',
-  'packaging/windows/Baslat.cmd', 'packaging/windows/Giris-Bilgileri.cmd', 'packaging/windows/BENI-OKU.txt',
+  ...rootFiles.map((filename) => `packaging/windows/${filename}`),
 ];
 
 function options(argv) {
@@ -226,7 +230,7 @@ async function main() {
     await command('tar', ['-xf', tar, '-C', app]);
     for (const file of requiredSource) await regularFile(path.join(app, file));
     await stageRuntime(config.runtimeDirectory, stage);
-    for (const filename of ['Baslat.cmd', 'Giris-Bilgileri.cmd', 'BENI-OKU.txt']) {
+    for (const filename of rootFiles) {
       const from = path.join(app, 'packaging', 'windows', filename);
       if (filename.endsWith('.cmd')) {
         const data = await fs.readFile(from);
@@ -247,11 +251,11 @@ async function main() {
     await fs.writeFile(path.join(app, 'windows-owner.json'), `${JSON.stringify({ ownerEmail: config.ownerEmail }, null, 2)}\n`, { mode: 0o600 });
     const files = await inspectTree(stage);
     const critical = new Set([
-      'Baslat.cmd', 'Giris-Bilgileri.cmd', 'BENI-OKU.txt', 'runtime-manifest.json',
+      ...rootFiles, 'runtime-manifest.json',
       'runtime/x64/node.exe', 'runtime/x64/LICENSE', 'runtime/arm64/node.exe', 'runtime/arm64/LICENSE',
       'app/LICENSE', 'app/package.json', 'app/package-lock.json', 'app/windows-owner.json',
-      'app/scripts/windows-launch.mjs', 'app/server/local.ts', 'app/server/windowsLauncher.ts',
-      'app/server/windowsCredentials.ts', 'app/server/http.ts', 'app/server/database.ts', 'app/server/repository.ts',
+      ...windowsHelpers.map((filename) => `app/${filename}`),
+      'app/server/http.ts', 'app/server/database.ts', 'app/server/repository.ts',
       ...files.filter((file) => file.startsWith('app/dist/') || file.startsWith('app/db/migrations/')
         || /^app\/server\/[^/]+\.ts$/.test(file) || /^app\/src\/lib\/[^/]+\.ts$/.test(file)),
       'app/db/schema.sql', 'app/src/data/shopContract.ts', 'app/src/data/types.ts',

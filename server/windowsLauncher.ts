@@ -10,6 +10,8 @@ import { ShopRepository } from './repository.ts';
 import { createLocalShopServer } from './local.ts';
 import { ensureWindowsOwner, readWindowsCredentials, showWindowsCredentials } from './windowsCredentials.ts';
 import type { WindowsOwnerDetails, WindowsOwnerOptions } from './windowsCredentials.ts';
+import { createWindowsBackup } from './windowsBackup.ts';
+import { installWindowsDesktopShortcut, showWindowsNotice } from './windowsShell.ts';
 
 export class WindowsLocalError extends Error {
   constructor(message: string) { super(message); this.name = 'WindowsLocalError'; }
@@ -210,12 +212,33 @@ function openBrowser(url: string): Promise<void> {
 
 export async function runWindowsLauncher(args = process.argv.slice(2)): Promise<void> {
   if (process.platform !== 'win32') throw new WindowsLocalError('Bu hazir paket Windows 10 veya 11 icindir.');
-  if (args.some((arg) => arg !== '--show-login') || args.length > 1) throw new WindowsLocalError('Baslat.cmd veya Giris-Bilgileri.cmd dosyasini kullanin.');
+  if (args.some((arg) => !['--show-login', '--backup', '--install-shortcut'].includes(arg)) || args.length > 1) {
+    throw new WindowsLocalError('Baslat.cmd, Giris-Bilgileri.cmd, Masaustune-Ekle.cmd veya Yedek-Al.cmd dosyasini kullanin.');
+  }
   const appDir = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
-  await verifyPortablePackage(path.dirname(appDir));
+  const packageRoot = path.dirname(appDir);
+  await verifyPortablePackage(packageRoot);
+  if (args[0] === '--install-shortcut') {
+    await installWindowsDesktopShortcut(packageRoot);
+    console.info('Dijital360 Print Shop masaustu kisayolu hazir.');
+    await showWindowsNotice('Masaüstüne Dijital360 Print Shop kısayolu eklendi.\n\nBu paket klasörünü taşımayın. Taşırsanız Masaustune-Ekle.cmd dosyasını yeni konumdan tekrar açın.')
+      .catch(() => {});
+    return;
+  }
   const localAppData = process.env.LOCALAPPDATA;
   if (!localAppData || !path.win32.isAbsolute(localAppData)) throw new WindowsLocalError('Windows kullanici veri klasoru bulunamadi.');
   const dataRoot = path.join(localAppData, 'Dijital360', 'PrintShop');
+  if (args[0] === '--backup') {
+    const userProfile = process.env.USERPROFILE;
+    if (!userProfile || !path.win32.isAbsolute(userProfile) || userProfile.startsWith('\\\\')) {
+      throw new WindowsLocalError('Windows kullanici klasoru bulunamadi. Yedek olusturulmadi.');
+    }
+    const backup = await createWindowsBackup({ dataRoot, backupRoot: path.join(userProfile, 'Dijital360-Yedekler'), packageRoot });
+    console.info(`Yedek hazir: ${backup.directory}`);
+    await showWindowsNotice(`Yedek tamamlandı.\n\n${backup.directory}\n\nSipariş ve dosya verileriniz yedeklendi. Uygulamayı yeniden başlatabilirsiniz.`)
+      .catch(() => {});
+    return;
+  }
   const config = await readJson(path.join(appDir, 'windows-owner.json')) as { ownerEmail?: unknown } | undefined;
   const ownerEmail = email(config?.ownerEmail);
   const ownerOptions = { email: ownerEmail, credentialsFile: path.join(dataRoot, 'owner-protected.json') };

@@ -10,6 +10,12 @@ BAŞLATMA
 2. Çıkarttığınız klasördeki Baslat.cmd dosyasına çift tıklayın.
 3. Tarayıcı otomatik açılır. Açılan komut penceresi uygulama çalışırken açık kalır.
 
+İSTEĞE BAĞLI MASAÜSTÜ KISAYOLU
+Masaustune-Ekle.cmd dosyasına çift tıklayarak masaüstü kısayolu oluşturabilirsiniz.
+Kısayol paketin çıkartıldığı mevcut klasöre bağlıdır. Klasörü sonradan taşımayın.
+Klasörü taşırsanız veya yeni paketi başka klasöre çıkartırsanız, Masaustune-Ekle.cmd
+dosyasını yeni konumunda yeniden çalıştırın.
+
 PERSONEL GİRİŞİ
 İlk kullanımda kişisel personel giriş bilgileri bilgisayarınızda oluşturulur ve
 yalnız Windows'un yerel penceresinde gösterilir. ZIP paketinde parola bulunmaz.
@@ -31,6 +37,18 @@ Sipariş ve dosya verileri aşağıdaki kişisel klasörde saklanır:
 Aynı bilgisayar ve Windows kullanıcısıyla yeni paketi ayrı bir klasöre çıkartıp
 başlattığınızda mevcut veriler korunur. Kişisel veri klasörünü silmeyin.
 Yedek almadan veya paket güncellemeden önce uygulamayı Ctrl+C ile kapatın.
+
+YEDEK ALMA
+1. Açık uygulama penceresinde Ctrl+C ile durdurun ve kapanmasını bekleyin.
+2. Yedek-Al.cmd dosyasına çift tıklayın. Veritabanı hâlâ kullanılıyorsa yedekleme
+   reddedilir; önce çalışan uygulamayı kapatın.
+3. Yedek aşağıdaki kişisel klasöre yazılır:
+   %USERPROFILE%\Dijital360-Yedekler
+
+Yedek, veritabanını ve DPAPI ile şifrelenmiş kişisel giriş kaydını birlikte içerir.
+Yedekleri özel tutun. Giriş kaydı yalnız aynı bilgisayar ve aynı Windows
+kullanıcısıyla çözülebilir. Farklı bilgisayar veya Windows kullanıcısına geri
+yükleme bu pakette sunulmaz.
 
 HATA OLURSA
 Eksik dosya veya çalışma zamanı doğrulama hatasında ZIP'i yeniden ve tamamen
